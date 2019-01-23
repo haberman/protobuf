@@ -40,7 +40,7 @@ RUN cd /var/local \
   && tar -zxvf bison-2.6.4.tar.gz \
   && cd /var/local/bison-2.6.4 \
   && ./configure \
-  && make \
+  && make -j$(nproc) \
   && make install
 
 # Install composer
@@ -60,7 +60,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-5.5 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -69,7 +69,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-5.5-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 
@@ -88,7 +88,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-5.6 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -97,7 +97,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-5.6-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 
@@ -116,7 +116,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.0 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -125,7 +125,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.0-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 
@@ -144,7 +144,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.1 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -153,7 +153,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.1-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 
@@ -172,7 +172,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.2 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -181,7 +181,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.2-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 
@@ -200,7 +200,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.3 \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 RUN cd php-src \
@@ -209,7 +209,7 @@ RUN cd php-src \
   --with-openssl \
   --with-zlib \
   --prefix=/usr/local/php-7.3-zts \
-  && make \
+  && make -j$(nproc) \
   && make install \
   && make clean
 

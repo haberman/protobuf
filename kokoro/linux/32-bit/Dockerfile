@@ -61,33 +61,33 @@ RUN wget http://am1.php.net/get/php-5.5.38.tar.bz2/from/this/mirror
 RUN mv mirror php-5.5.38.tar.bz2
 RUN tar -xvf php-5.5.38.tar.bz2
 RUN cd php-5.5.38 && ./configure --enable-maintainer-zts --prefix=/usr/local/php-5.5-zts && \
-    make && make install && make clean && cd ..
+    make -j$(nproc) && make install && make clean && cd ..
 RUN cd php-5.5.38 && make clean && ./configure --enable-bcmath --prefix=/usr/local/php-5.5 && \
-    make && make install && make clean && cd ..
+    make -j$(nproc) && make install && make clean && cd ..
 
 RUN wget http://am1.php.net/get/php-5.6.30.tar.bz2/from/this/mirror
 RUN mv mirror php-5.6.30.tar.bz2
 RUN tar -xvf php-5.6.30.tar.bz2
 RUN cd php-5.6.30 && ./configure --enable-maintainer-zts --prefix=/usr/local/php-5.6-zts && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 RUN cd php-5.6.30 && make clean && ./configure --enable-bcmath --prefix=/usr/local/php-5.6 && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 
 RUN wget http://am1.php.net/get/php-7.0.18.tar.bz2/from/this/mirror
 RUN mv mirror php-7.0.18.tar.bz2
 RUN tar -xvf php-7.0.18.tar.bz2
 RUN cd php-7.0.18 && ./configure --enable-maintainer-zts --prefix=/usr/local/php-7.0-zts && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 RUN cd php-7.0.18 && make clean && ./configure --enable-bcmath --prefix=/usr/local/php-7.0 && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 
 RUN wget http://am1.php.net/get/php-7.1.4.tar.bz2/from/this/mirror
 RUN mv mirror php-7.1.4.tar.bz2
 RUN tar -xvf php-7.1.4.tar.bz2
 RUN cd php-7.1.4 && ./configure --enable-maintainer-zts --prefix=/usr/local/php-7.1-zts && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 RUN cd php-7.1.4 && make clean && ./configure --enable-bcmath --prefix=/usr/local/php-7.1 && \
-    make && make install && cd ..
+    make -j$(nproc) && make install && cd ..
 
 RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
 RUN php composer-setup.php

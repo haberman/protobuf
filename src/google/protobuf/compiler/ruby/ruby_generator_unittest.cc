@@ -36,7 +36,7 @@
 #include <google/protobuf/io/zero_copy_stream.h>
 #include <google/protobuf/io/printer.h>
 
-#include <google/protobuf/testing/googletest.h>
+#include <google/protobuf/test_util2.h>
 #include <gtest/gtest.h>
 #include <google/protobuf/testing/file.h>
 
@@ -47,7 +47,7 @@ namespace ruby {
 namespace {
 
 string FindRubyTestDir() {
-  return TestSourceDir() + "/google/protobuf/compiler/ruby";
+  return TestUtil::TestSourceDir() + "/google/protobuf/compiler/ruby";
 }
 
 // This test is a simple golden-file test over the output of the Ruby code

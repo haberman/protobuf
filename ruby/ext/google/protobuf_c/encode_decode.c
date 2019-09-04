@@ -479,7 +479,7 @@ static void* oneofsubmsg_handler(void* msg_data, const void* hd) {
 
   submsg_rb = DEREF(msg_data, oneofdata->ofs, VALUE);
   TypedData_Get_Struct(submsg_rb, MessageHeader, &Message_type, submsg);
-  return submsg;
+  return submsg->data;
 }
 
 // Set up handlers for a repeated field.
@@ -1464,7 +1464,7 @@ static void discard_unknown(VALUE msg_rb, const Descriptor* desc) {
       Map_iter map_it;
 
       if (!upb_fielddef_issubmsg(map_field_value(f))) continue;
-      map = DEREF(msg, offset, VALUE);
+      map = DEREF(msg->data, offset, VALUE);
       if (map == Qnil) continue;
       for (Map_begin(map, &map_it); !Map_done(&map_it); Map_next(&map_it)) {
         VALUE submsg = Map_iter_value(&map_it);
@@ -1473,7 +1473,7 @@ static void discard_unknown(VALUE msg_rb, const Descriptor* desc) {
         discard_unknown(submsg, subdesc);
       }
     } else if (upb_fielddef_isseq(f)) {
-      VALUE ary = DEREF(msg, offset, VALUE);
+      VALUE ary = DEREF(msg->data, offset, VALUE);
       int size;
       int i;
 
@@ -1487,7 +1487,7 @@ static void discard_unknown(VALUE msg_rb, const Descriptor* desc) {
         discard_unknown(submsg, subdesc);
       }
     } else {
-      VALUE submsg = DEREF(msg, offset, VALUE);
+      VALUE submsg = DEREF(msg->data, offset, VALUE);
       VALUE descriptor;
       const Descriptor* subdesc;
 

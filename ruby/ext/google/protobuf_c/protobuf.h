@@ -401,11 +401,15 @@ const upb_fielddef* map_entry_value(const upb_msgdef* msgdef);
 // -----------------------------------------------------------------------------
 
 typedef struct {
-  upb_fieldtype_t field_type;
-  VALUE field_type_class;
   void* elements;
   int size;
   int capacity;
+} FieldArray;
+
+typedef struct {
+  upb_fieldtype_t field_type;
+  VALUE field_type_class;
+  FieldArray* array;
 } RepeatedField;
 
 void RepeatedField_mark(void* self);

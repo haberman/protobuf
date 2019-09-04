@@ -453,7 +453,7 @@ typedef struct {
   upb_fieldtype_t value_type;
   VALUE value_type_class;
   VALUE parse_frame;
-  upb_strtable table;
+  upb_strtable *table;
 } Map;
 
 void Map_mark(void* self);

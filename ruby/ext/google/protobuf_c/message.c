@@ -34,21 +34,24 @@
 // Class/module creation from msgdefs and enumdefs, respectively.
 // -----------------------------------------------------------------------------
 
-void* Message_data(void* msg) {
-  return ((uint8_t *)msg) + sizeof(MessageHeader);
+void* Message_data(MessageHeader* _self) {
+  MessageHeader* self = _self;
+  return self->data;
 }
 
 void Message_mark(void* _self) {
-  MessageHeader* self = (MessageHeader *)_self;
+  MessageHeader* self = _self;
   layout_mark(self->descriptor->layout, Message_data(self));
 }
 
-void Message_free(void* self) {
-  stringsink* unknown = ((MessageHeader *)self)->unknown_fields;
-  if (unknown != NULL) {
-    stringsink_uninit(unknown);
-    free(unknown);
+void Message_free(void* _self) {
+  MessageHeader* self = _self;
+  stringsink** unknown = self->data;
+  if (*unknown != NULL) {
+    stringsink_uninit(*unknown);
+    xfree(*unknown);
   }
+  xfree(self->data);
   xfree(self);
 }
 
@@ -62,21 +65,41 @@ VALUE Message_alloc(VALUE klass) {
   Descriptor* desc = ruby_to_Descriptor(descriptor);
   MessageHeader* msg;
   VALUE ret;
-  size_t size;
 
   if (desc->layout == NULL) {
     create_layout(desc);
   }
 
-  msg = ALLOC_N(uint8_t, sizeof(MessageHeader) + desc->layout->size);
+  msg = ALLOC(MessageHeader);
   msg->descriptor = desc;
-  msg->unknown_fields = NULL;
+  msg->data = ALLOC_N(uint8_t, desc->layout->size);
   memcpy(Message_data(msg), desc->layout->empty_template, desc->layout->size);
 
   ret = TypedData_Wrap_Struct(klass, &Message_type, msg);
   rb_ivar_set(ret, descriptor_instancevar_interned, descriptor);
 
   return ret;
+}
+
+const stringsink* Message_unknownfields(const void* msg_data) {
+  const stringsink*const* unknown_fields = msg_data;
+  return *unknown_fields;
+}
+
+stringsink* Message_mutable_unknownfields(void* msg_data) {
+  stringsink** unknown_fields = msg_data;
+  if (*unknown_fields == NULL) {
+    *unknown_fields = malloc(sizeof(stringsink));
+    stringsink_init(*unknown_fields);
+  }
+  return *unknown_fields;
+}
+
+void Message_clear_unknownfields(void* msg_data) {
+  stringsink** unknown_fields = msg_data;
+  if (*unknown_fields != NULL) {
+    (*unknown_fields)->len = 0;
+  }
 }
 
 static const upb_fielddef* which_oneof_field(MessageHeader* self, const upb_oneofdef* o) {

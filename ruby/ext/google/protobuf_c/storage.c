@@ -486,7 +486,7 @@ void create_layout(Descriptor* desc) {
   upb_msg_field_iter it;
   upb_msg_oneof_iter oit;
   size_t off = 0;
-  size_t hasbit = 0;
+  size_t hasbit = sizeof(void*) * 8;  // unknown_fields.
 
   layout->empty_template = NULL;
   layout->desc = desc;
@@ -511,9 +511,7 @@ void create_layout(Descriptor* desc) {
     }
   }
 
-  if (hasbit != 0) {
-    off += (hasbit + 8 - 1) / 8;
-  }
+  off = (hasbit + 8 - 1) / 8;
 
   off = align_up_to(off, sizeof(VALUE));
   layout->value_offset = off;

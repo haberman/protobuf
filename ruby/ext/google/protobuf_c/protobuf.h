@@ -569,18 +569,18 @@ typedef struct {
   size_t len, size;
 } stringsink;
 
+void stringsink_init(stringsink *sink);
 void stringsink_uninit(stringsink *sink);
 
 struct MessageHeader {
   Descriptor* descriptor;      // kept alive by self.class.descriptor reference.
-  stringsink* unknown_fields;  // store unknown fields in decoding.
-  // Data comes after this.
+  void* data;                  // raw message data.
 };
 
 extern rb_data_type_t Message_type;
 
 VALUE build_class_from_descriptor(VALUE descriptor);
-void* Message_data(void* msg);
+void* Message_data(MessageHeader* msg);
 void Message_mark(void* self);
 void Message_free(void* self);
 VALUE Message_alloc(VALUE klass);
@@ -599,6 +599,9 @@ VALUE Message_decode(VALUE klass, VALUE data);
 VALUE Message_encode(VALUE klass, VALUE msg_rb);
 VALUE Message_decode_json(int argc, VALUE* argv, VALUE klass);
 VALUE Message_encode_json(int argc, VALUE* argv, VALUE klass);
+const stringsink* Message_unknownfields(const void* msg_data);
+stringsink* Message_mutable_unknownfields(void* msg_data);
+void Message_clear_unknownfields(void* msg_data);
 
 VALUE Google_Protobuf_discard_unknown(VALUE self, VALUE msg_rb);
 VALUE Google_Protobuf_deep_copy(VALUE self, VALUE obj);

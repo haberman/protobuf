@@ -30,6 +30,12 @@
 
 #include "protobuf.h"
 
+void* MessageData_new(MessageLayout* layout) {
+  void* data = ALLOC_N(uint8_t, layout->size);
+  memcpy(data, layout->empty_template, layout->size);
+  return data;
+}
+
 // -----------------------------------------------------------------------------
 // Class/module creation from msgdefs and enumdefs, respectively.
 // -----------------------------------------------------------------------------
@@ -51,6 +57,7 @@ void Message_free(void* _self) {
     stringsink_uninit(*unknown);
     xfree(*unknown);
   }
+  layout_free(self->descriptor->layout, self->data);
   xfree(self->data);
   xfree(self);
 }
@@ -72,8 +79,7 @@ VALUE Message_alloc(VALUE klass) {
 
   msg = ALLOC(MessageHeader);
   msg->descriptor = desc;
-  msg->data = ALLOC_N(uint8_t, desc->layout->size);
-  memcpy(Message_data(msg), desc->layout->empty_template, desc->layout->size);
+  msg->data = MessageData_new(desc->layout);
 
   ret = TypedData_Wrap_Struct(klass, &Message_type, msg);
   rb_ivar_set(ret, descriptor_instancevar_interned, descriptor);

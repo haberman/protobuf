@@ -65,6 +65,35 @@ static bool is_ruby_num(VALUE value) {
           TYPE(value) == T_BIGNUM);
 }
 
+static void lazy_construct(upb_fieldtype_t type, VALUE* val) {
+  switch (type) {
+    case UPB_TYPE_STRING:
+    case UPB_TYPE_BYTES:
+      if (is_tagged_ptr(*val)) {
+        void* str = get_tagged_ptr(*val);
+        *val = get_frozen_string(str, GetFlatStringSize(str),
+                                 type == UPB_TYPE_BYTES);
+        FreeFlatString(str);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static void lazy_free(upb_fieldtype_t type, VALUE* val) {
+  switch (type) {
+    case UPB_TYPE_STRING:
+    case UPB_TYPE_BYTES:
+      if (is_tagged_ptr(*val)) {
+        FreeFlatString(get_tagged_ptr(*val));
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 void native_slot_check_int_range_precision(const char* name, upb_fieldtype_t type, VALUE val) {
   if (!is_ruby_num(val)) {
     rb_raise(cTypeError, "Expected number type for integral field '%s' (given %s).",
@@ -113,17 +142,25 @@ VALUE native_slot_encode_and_freeze_string(upb_fieldtype_t type, VALUE value) {
   return value;
 }
 
-void native_slot_set(const char* name,
-                     upb_fieldtype_t type, VALUE type_class,
-                     void* memory, VALUE value) {
-  native_slot_set_value_and_case(name, type, type_class, memory, value, NULL, 0);
-}
+// Atomically (with respect to Ruby VM calls) either update the value and set a
+// oneof case, or do neither. If |case_memory| is null, then no case value is
+// set.
+//
+// The fielddef |f| is only needed for oneof fields.  We use it to determine
+// what (if any) memory we need to free.
+static void native_slot_set_value_and_case(const char* name,
+                                           upb_fieldtype_t type,
+                                           VALUE type_class, void* memory,
+                                           VALUE value, uint32_t* case_memory,
+                                           uint32_t case_number,
+                                           const upb_fielddef* f) {
+  // If the oneof is already set, we have to look up the existing field to see
+  // if we need to free any memory that was waiting for a lazy object to be
+  // created.
+  if (case_memory && *case_memory && (*case_memory & ONEOF_CASE_MASK) == 0) {
+    // TODO(haberman): free memory
+  }
 
-void native_slot_set_value_and_case(const char* name,
-                                    upb_fieldtype_t type, VALUE type_class,
-                                    void* memory, VALUE value,
-                                    uint32_t* case_memory,
-                                    uint32_t case_number) {
   // Note that in order to atomically change the value in memory and the case
   // value (w.r.t. Ruby VM calls), we must set the value at |memory| only after
   // all Ruby VM calls are complete. The case is then set at the bottom of this
@@ -164,6 +201,7 @@ void native_slot_set_value_and_case(const char* name,
                  name, rb_class2name(CLASS_OF(value)));
       }
 
+      lazy_free(UPB_TYPE_STRING, &DEREF(memory, VALUE));
       DEREF(memory, VALUE) = native_slot_encode_and_freeze_string(type, value);
       break;
 
@@ -173,6 +211,7 @@ void native_slot_set_value_and_case(const char* name,
                  name, rb_class2name(CLASS_OF(value)));
       }
 
+      lazy_free(UPB_TYPE_STRING, &DEREF(memory, VALUE));
       DEREF(memory, VALUE) = native_slot_encode_and_freeze_string(type, value);
       break;
     }
@@ -282,6 +321,13 @@ void native_slot_set_value_and_case(const char* name,
   }
 }
 
+void native_slot_set(const char* name,
+                     upb_fieldtype_t type, VALUE type_class,
+                     void* memory, VALUE value) {
+  native_slot_set_value_and_case(name, type, type_class, memory, value, NULL, 0,
+                                 NULL);
+}
+
 VALUE native_slot_get(upb_fieldtype_t type,
                       VALUE type_class,
                       const void* memory) {
@@ -294,8 +340,11 @@ VALUE native_slot_get(upb_fieldtype_t type,
       return DEREF(memory, int8_t) ? Qtrue : Qfalse;
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES:
-    case UPB_TYPE_MESSAGE:
-      return DEREF(memory, VALUE);
+    case UPB_TYPE_MESSAGE: {
+      VALUE* val = &DEREF(memory, VALUE);
+      lazy_construct(type, val);
+      return *val;
+    }
     case UPB_TYPE_ENUM: {
       int32_t val = DEREF(memory, int32_t);
       VALUE symbol = enum_lookup(type_class, INT2NUM(val));
@@ -360,19 +409,27 @@ void native_slot_mark(upb_fieldtype_t type, void* memory) {
   switch (type) {
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES:
-    case UPB_TYPE_MESSAGE:
-      rb_gc_mark(DEREF(memory, VALUE));
+    case UPB_TYPE_MESSAGE: {
+      VALUE val = DEREF(memory, VALUE);
+      if (!is_tagged_ptr(val)) {
+        rb_gc_mark(val);
+      }
       break;
+    }
     default:
       break;
   }
 }
 
 void native_slot_dup(upb_fieldtype_t type, void* to, void* from) {
+  lazy_construct(type, to);
+  lazy_construct(type, from);
   memcpy(to, from, native_slot_size(type));
 }
 
 void native_slot_deep_copy(upb_fieldtype_t type, void* to, void* from) {
+  lazy_construct(type, from);
+  lazy_construct(type, to);
   switch (type) {
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
@@ -393,6 +450,8 @@ void native_slot_deep_copy(upb_fieldtype_t type, void* to, void* from) {
 }
 
 bool native_slot_eq(upb_fieldtype_t type, void* mem1, void* mem2) {
+  lazy_construct(type, mem1);
+  lazy_construct(type, mem2);
   switch (type) {
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES:
@@ -920,9 +979,10 @@ void layout_set(MessageLayout* layout,
         case_value |= ONEOF_CASE_MASK;
       }
 
-      native_slot_set_value_and_case(
-          upb_fielddef_name(field), upb_fielddef_type(field),
-          field_type_class(layout, field), memory, val, oneof_case, case_value);
+      native_slot_set_value_and_case(upb_fielddef_name(field),
+                                     upb_fielddef_type(field),
+                                     field_type_class(layout, field), memory,
+                                     val, oneof_case, case_value, field);
     }
   } else if (is_map_field(field)) {
     check_map_field_type(layout, val, field);
@@ -960,14 +1020,53 @@ void layout_mark(MessageLayout* layout, void* storage) {
   int i;
 
   for (i = 0; i < layout->value_count; i++) {
-    rb_gc_mark(values[i]);
+    VALUE val = values[i];
+    if (!is_tagged_ptr(val)) {
+      rb_gc_mark(val);
+    }
   }
 
   for (i = 0; i < noneofs; i++) {
     MessageOneof* oneof = &layout->oneofs[i];
     uint32_t* case_ptr = (uint32_t*)CHARPTR_AT(storage, oneof->case_offset);
-    if (*case_ptr & ONEOF_CASE_MASK) {
-      rb_gc_mark(DEREF_OFFSET(storage, oneof->offset, VALUE));
+    VALUE val;
+    if ((*case_ptr & ONEOF_CASE_MASK) == 0) {
+      continue;
+    }
+    val = DEREF_OFFSET(storage, oneof->offset, VALUE);
+    if (is_tagged_ptr(val)) {
+      continue;
+    }
+
+    rb_gc_mark(val);
+  }
+}
+
+void layout_free(MessageLayout* layout, void* storage) {
+  // XXX this needs to be recursive, but it also needs to somehow *not* depend
+  // on the layout (or refcount it or something).
+  int value_offset = layout->value_offset;
+  VALUE* values = (VALUE*)CHARPTR_AT(storage, value_offset);
+  int noneofs = upb_msgdef_numoneofs(layout->msgdef);
+  int i;
+
+  for (i = 0; i < layout->value_count; i++) {
+    VALUE val = values[i];
+    if (is_tagged_ptr(val)) {
+      FreeFlatString(get_tagged_ptr(val));
+    }
+  }
+
+  for (i = 0; i < noneofs; i++) {
+    MessageOneof* oneof = &layout->oneofs[i];
+    uint32_t* case_ptr = (uint32_t*)CHARPTR_AT(storage, oneof->case_offset);
+    VALUE val;
+    if ((*case_ptr & ONEOF_CASE_MASK) == 0) {
+      continue;
+    }
+    val = DEREF_OFFSET(storage, oneof->offset, VALUE);
+    if (is_tagged_ptr(val)) {
+      FreeFlatString(get_tagged_ptr(val));
     }
   }
 }

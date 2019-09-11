@@ -30,20 +30,6 @@
 
 #include "protobuf.h"
 
-// This function is equivalent to rb_str_cat(), but unlike the real
-// rb_str_cat(), it doesn't leak memory in some versions of Ruby.
-// For more information, see:
-//   https://bugs.ruby-lang.org/issues/11328
-VALUE noleak_rb_str_cat(VALUE rb_str, const char *str, long len) {
-  char *p;
-  size_t oldlen = RSTRING_LEN(rb_str);
-  rb_str_modify_expand(rb_str, len);
-  p = RSTRING_PTR(rb_str);
-  memcpy(p + oldlen, str, len);
-  rb_str_set_len(rb_str, oldlen + len);
-  return rb_str;
-}
-
 // The code below also comes from upb's prototype Ruby binding, developed by
 // haberman@.
 
@@ -188,17 +174,6 @@ DEFINE_APPEND_HANDLER(int64,  int64_t)
 DEFINE_APPEND_HANDLER(uint64, uint64_t)
 DEFINE_APPEND_HANDLER(double, double)
 
-// Appends a string to a repeated field.
-static void* appendstr_handler(void *closure,
-                               const void *hd,
-                               size_t size_hint) {
-  VALUE ary = (VALUE)closure;
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyStringUtf8Encoding);
-  RepeatedField_push_native(ary, &str);
-  return (void*)str;
-}
-
 static void set_hasbit(void *closure, int32_t hasbit) {
   if (hasbit > 0) {
     uint8_t* storage = closure;
@@ -206,61 +181,38 @@ static void set_hasbit(void *closure, int32_t hasbit) {
   }
 }
 
-// Appends a 'bytes' string to a repeated field.
-static void* appendbytes_handler(void *closure,
-                                 const void *hd,
-                                 size_t size_hint) {
+static void* startrepeatedstring_handler(void* closure, const void* hd,
+                                         size_t size_hint) {
   VALUE ary = (VALUE)closure;
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyString8bitEncoding);
-  RepeatedField_push_native(ary, &str);
-  return (void*)str;
+  VALUE empty = get_frozen_string(NULL, 0, false);
+  return RepeatedField_push_native(ary, &empty);
 }
 
-// Sets a non-repeated string field in a message.
-static void* str_handler(void *msg_data,
-                         const void *hd,
-                         size_t size_hint) {
-  const field_handlerdata_t *fieldhandler = hd;
-
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyStringUtf8Encoding);
-  DEREF(msg_data, fieldhandler->ofs, VALUE) = str;
-  set_hasbit(msg_data, fieldhandler->hasbit);
-  return (void*)str;
+static void* startrepeatedbytes_handler(void* closure, const void* hd,
+                                        size_t size_hint) {
+  VALUE ary = (VALUE)closure;
+  VALUE empty = get_frozen_string(NULL, 0, true);
+  return RepeatedField_push_native(ary, &empty);
 }
 
-// Sets a non-repeated 'bytes' field in a message.
-static void* bytes_handler(void *msg_data,
-                           const void *hd,
-                           size_t size_hint) {
-  const field_handlerdata_t *fieldhandler = hd;
-
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyString8bitEncoding);
-  DEREF(msg_data, fieldhandler->ofs, VALUE) = str;
-  set_hasbit(msg_data, fieldhandler->hasbit);
-  return (void*)str;
+static void* startfield_handler(void* closure, const void* hd,
+                                size_t size_hint) {
+  const field_handlerdata_t* field_data = hd;
+  VALUE* memory = &DEREF(closure, field_data->ofs, VALUE);
+  set_hasbit(closure, field_data->hasbit);
+  return memory;
 }
 
 static size_t stringdata_handler(void* closure, const void* hd,
                                  const char* str, size_t len,
                                  const upb_bufhandle* handle) {
-  VALUE rb_str = (VALUE)closure;
-  noleak_rb_str_cat(rb_str, str, len);
+  VALUE* val = closure;
+  if (is_tagged_ptr(*val)) {
+    *val = tag_ptr(ConcatFlatString(get_tagged_ptr(*val), str, len));
+  } else {
+    *val = tag_ptr(NewFlatString(str, len));
+  }
   return len;
-}
-
-static bool stringdata_end_handler(void* closure, const void* hd) {
-  VALUE rb_str = (VALUE)closure;
-  rb_obj_freeze(rb_str);
-  return true;
-}
-
-static bool appendstring_end_handler(void* closure, const void* hd) {
-  VALUE rb_str = (VALUE)closure;
-  rb_obj_freeze(rb_str);
-  return true;
 }
 
 // Appends a submessage to a repeated field (a regular Ruby array for now).
@@ -428,32 +380,13 @@ DEFINE_ONEOF_HANDLER(double, double)
 #undef DEFINE_ONEOF_HANDLER
 
 // Handlers for strings in a oneof.
-static void *oneofstr_handler(void *msg_data,
-                              const void *hd,
-                              size_t size_hint) {
-  const oneof_handlerdata_t *oneofdata = hd;
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyStringUtf8Encoding);
-  DEREF(msg_data, oneofdata->case_ofs, uint32_t) = oneofdata->oneof_case_num;
-  DEREF(msg_data, oneofdata->ofs, VALUE) = str;
-  return (void*)str;
-}
-
-static void *oneofbytes_handler(void *msg_data,
-                                const void *hd,
+static void* startoneof_handler(void* msg_data, const void* hd,
                                 size_t size_hint) {
-  const oneof_handlerdata_t *oneofdata = hd;
-  VALUE str = rb_str_new2("");
-  rb_enc_associate(str, kRubyString8bitEncoding);
+  const oneof_handlerdata_t* oneofdata = hd;
+  VALUE* mem = &DEREF(msg_data, oneofdata->ofs, VALUE);
+  *mem = Qnil;
   DEREF(msg_data, oneofdata->case_ofs, uint32_t) = oneofdata->oneof_case_num;
-  DEREF(msg_data, oneofdata->ofs, VALUE) = str;
-  return (void*)str;
-}
-
-static bool oneofstring_end_handler(void* closure, const void* hd) {
-  VALUE rb_str = rb_str_new2("");
-  rb_obj_freeze(rb_str);
-  return true;
+  return mem;
 }
 
 // Handler for a submessage field in a oneof.
@@ -510,15 +443,13 @@ static void add_handlers_for_repeated_field(upb_handlers *h,
 #undef SET_HANDLER
 
     case UPB_TYPE_STRING:
-    case UPB_TYPE_BYTES: {
-      bool is_bytes = upb_fielddef_type(f) == UPB_TYPE_BYTES;
-      upb_handlers_setstartstr(h, f, is_bytes ?
-                               appendbytes_handler : appendstr_handler,
-                               NULL);
+      upb_handlers_setstartstr(h, f, startrepeatedstring_handler, &attr),
       upb_handlers_setstring(h, f, stringdata_handler, NULL);
-      upb_handlers_setendstr(h, f, appendstring_end_handler, NULL);
       break;
-    }
+    case UPB_TYPE_BYTES:
+      upb_handlers_setstartstr(h, f, startrepeatedbytes_handler, &attr),
+      upb_handlers_setstring(h, f, stringdata_handler, NULL);
+      break;
     case UPB_TYPE_MESSAGE: {
       VALUE subklass = field_type_class(desc->layout, f);
       upb_handlerattr attr = UPB_HANDLERATTR_INIT;
@@ -554,14 +485,10 @@ static void add_handlers_for_singular_field(const Descriptor* desc,
       break;
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
-      bool is_bytes = upb_fielddef_type(f) == UPB_TYPE_BYTES;
       upb_handlerattr attr = UPB_HANDLERATTR_INIT;
       attr.handler_data = newhandlerdata(h, offset, hasbit);
-      upb_handlers_setstartstr(h, f,
-                               is_bytes ? bytes_handler : str_handler,
-                               &attr);
-      upb_handlers_setstring(h, f, stringdata_handler, &attr);
-      upb_handlers_setendstr(h, f, stringdata_end_handler, &attr);
+      upb_handlers_setstartstr(h, f, startfield_handler, &attr),
+      upb_handlers_setstring(h, f, stringdata_handler, NULL);
       break;
     }
     case UPB_TYPE_MESSAGE: {
@@ -641,12 +568,8 @@ static void add_handlers_for_oneof_field(upb_handlers *h,
 
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
-      bool is_bytes = upb_fielddef_type(f) == UPB_TYPE_BYTES;
-      upb_handlers_setstartstr(h, f, is_bytes ?
-                               oneofbytes_handler : oneofstr_handler,
-                               &attr);
+      upb_handlers_setstartstr(h, f, startoneof_handler, &attr),
       upb_handlers_setstring(h, f, stringdata_handler, NULL);
-      upb_handlers_setendstr(h, f, oneofstring_end_handler, &attr);
       break;
     }
     case UPB_TYPE_MESSAGE: {
@@ -907,23 +830,30 @@ static upb_selector_t getsel(const upb_fielddef *f, upb_handlertype_t type) {
 
 static void putstr(VALUE str, const upb_fielddef *f, upb_sink sink) {
   upb_sink subsink;
+  char* ptr;
+  size_t len;
 
-  if (str == Qnil) return;
-
-  assert(BUILTIN_TYPE(str) == RUBY_T_STRING);
-
-  // We should be guaranteed that the string has the correct encoding because
-  // we ensured this at assignment time and then froze the string.
-  if (upb_fielddef_type(f) == UPB_TYPE_STRING) {
-    assert(rb_enc_from_index(ENCODING_GET(str)) == kRubyStringUtf8Encoding);
+  if (is_tagged_ptr(str)) {
+    ptr = get_tagged_ptr(str);
+    len = GetFlatStringSize(ptr);
   } else {
-    assert(rb_enc_from_index(ENCODING_GET(str)) == kRubyString8bitEncoding);
+    if (str == Qnil) return;
+
+    assert(BUILTIN_TYPE(str) == RUBY_T_STRING);
+
+    // We should be guaranteed that the string has the correct encoding because
+    // we ensured this at assignment time and then froze the string.
+    if (upb_fielddef_type(f) == UPB_TYPE_STRING) {
+      assert(rb_enc_from_index(ENCODING_GET(str)) == kRubyStringUtf8Encoding);
+    } else {
+      assert(rb_enc_from_index(ENCODING_GET(str)) == kRubyString8bitEncoding);
+    }
+    ptr = RSTRING_PTR(str);
+    len = RSTRING_LEN(str);
   }
 
-  upb_sink_startstr(sink, getsel(f, UPB_HANDLER_STARTSTR), RSTRING_LEN(str),
-                    &subsink);
-  upb_sink_putstring(subsink, getsel(f, UPB_HANDLER_STRING), RSTRING_PTR(str),
-                     RSTRING_LEN(str), NULL);
+  upb_sink_startstr(sink, getsel(f, UPB_HANDLER_STARTSTR), len, &subsink);
+  upb_sink_putstring(subsink, getsel(f, UPB_HANDLER_STRING), ptr, len, NULL);
   upb_sink_endstr(sink, getsel(f, UPB_HANDLER_ENDSTR));
 }
 
@@ -1276,7 +1206,11 @@ static void putmsg(VALUE msg_rb, const Descriptor* desc,
       if (upb_msgdef_syntax(desc->msgdef) == UPB_SYNTAX_PROTO2) {
         is_default = layout_has(desc->layout, Message_data(msg), f) == Qfalse;
       } else if (upb_msgdef_syntax(desc->msgdef) == UPB_SYNTAX_PROTO3) {
-        is_default = RSTRING_LEN(str) == 0;
+        if (is_tagged_ptr(str)) {
+          is_default = GetFlatStringSize(get_tagged_ptr(str)) == 0;
+        } else {
+          is_default = RSTRING_LEN(str) == 0;
+        }
       }
 
       if (is_matching_oneof || emit_defaults || !is_default) {

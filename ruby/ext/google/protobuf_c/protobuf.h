@@ -347,16 +347,6 @@ void native_slot_set(const char* name,
                      VALUE type_class,
                      void* memory,
                      VALUE value);
-// Atomically (with respect to Ruby VM calls) either update the value and set a
-// oneof case, or do neither. If |case_memory| is null, then no case value is
-// set.
-void native_slot_set_value_and_case(const char* name,
-                                    upb_fieldtype_t type,
-                                    VALUE type_class,
-                                    void* memory,
-                                    VALUE value,
-                                    uint32_t* case_memory,
-                                    uint32_t case_number);
 VALUE native_slot_get(upb_fieldtype_t type,
                       VALUE type_class,
                       const void* memory);
@@ -402,8 +392,8 @@ const upb_fielddef* map_entry_value(const upb_msgdef* msgdef);
 
 typedef struct {
   void* elements;
-  int size;
-  int capacity;
+  size_t size;
+  size_t capacity;
 } FieldArray;
 
 typedef struct {
@@ -426,12 +416,12 @@ RepeatedField* ruby_to_RepeatedField(VALUE value);
 VALUE RepeatedField_new_this_type(VALUE _self);
 VALUE RepeatedField_each(VALUE _self);
 VALUE RepeatedField_index(int argc, VALUE* argv, VALUE _self);
-void* RepeatedField_index_native(VALUE _self, int index);
+void* RepeatedField_index_native(VALUE _self, size_t index);
 int RepeatedField_size(VALUE _self);
 VALUE RepeatedField_index_set(VALUE _self, VALUE _index, VALUE val);
-void RepeatedField_reserve(RepeatedField* self, int new_size);
+void RepeatedField_reserve(RepeatedField* self, size_t new_size);
 VALUE RepeatedField_push(VALUE _self, VALUE val);
-void RepeatedField_push_native(VALUE _self, void* data);
+void* RepeatedField_push_native(VALUE _self, void* data);
 VALUE RepeatedField_pop_one(VALUE _self);
 VALUE RepeatedField_insert(int argc, VALUE* argv, VALUE _self);
 VALUE RepeatedField_replace(VALUE _self, VALUE list);
@@ -554,6 +544,7 @@ void layout_clear(MessageLayout* layout,
                  const upb_fielddef* field);
 void layout_init(MessageLayout* layout, void* storage);
 void layout_mark(MessageLayout* layout, void* storage);
+void layout_free(MessageLayout* layout, void* storage);
 void layout_dup(MessageLayout* layout, void* to, void* from);
 void layout_deep_copy(MessageLayout* layout, void* to, void* from);
 VALUE layout_eq(MessageLayout* layout, void* msg1, void* msg2);
@@ -664,5 +655,25 @@ extern VALUE c_only_cookie;
 #endif
 
 #define UPB_UNUSED(var) (void)var
+
+// A tagged ptr is a specially-formed VALUE that stores a pointer instead of
+// a value.  We use it to store protobuf data before we have lazily constructed
+// a Ruby object for that data.
+//
+// We take advantage of the fact that Ruby tags VALUE such that the bottom bit
+// indicates whether this is a Fixnum or not.  We know that when we *do*
+// construct a VALUE it will never be a Fixnum, so we use the bottom bit to
+// indicate that it is a pointer instead of a VALUE.  This requires that none of
+// the pointers we are tagging ever have the bottom bit set.
+VALUE tag_ptr(void* ptr);
+bool is_tagged_ptr(VALUE val);
+void* get_tagged_ptr(VALUE val);
+
+// A simple string representation that stores both length and data with a single
+// pointer.
+char* NewFlatString(const char* data, size_t len);
+char* ConcatFlatString(char* src, const char* data, size_t len);
+void FreeFlatString(char* str);
+size_t GetFlatStringSize(char* str);
 
 #endif  // __GOOGLE_PROTOBUF_RUBY_PROTOBUF_H__

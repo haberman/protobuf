@@ -152,6 +152,9 @@ class RepeatedFieldTest < Test::Unit::TestCase
       arr[-2]
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
+      arr[-4]
+    end
+    check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
       arr[20]
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|

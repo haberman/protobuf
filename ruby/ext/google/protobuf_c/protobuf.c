@@ -62,6 +62,62 @@ VALUE get_frozen_string(const char* str, size_t size, bool binary) {
 }
 
 // -----------------------------------------------------------------------------
+// Pointer tagging.
+// -----------------------------------------------------------------------------
+
+VALUE tag_ptr(void* ptr) {
+  long intptr = (long)ptr;
+  if (intptr & 1) {
+    rb_raise(rb_eRuntimeError,
+             "Tried to tag a pointer with the bottom bit set.");
+  }
+  return intptr | 1;
+}
+
+bool is_tagged_ptr(VALUE val) {
+  return val & 1;
+}
+
+void* get_tagged_ptr(VALUE val) {
+  UPB_ASSERT(is_tagged_ptr(val));
+  return (void*)(val & ~1UL);
+}
+
+// -----------------------------------------------------------------------------
+// Flat string.
+// -----------------------------------------------------------------------------
+
+char* NewFlatString(const char* buf, size_t len) {
+  char *data = xmalloc(len + sizeof(size_t) + 1);
+  char *str = data + sizeof(size_t);
+  memcpy(data, &len, sizeof(size_t));
+  memcpy(str, buf, len);
+  str[len] = '\0';
+  return str;
+}
+
+char* ConcatFlatString(char* src, const char* data, size_t len) {
+  size_t old_len = GetFlatStringSize(src);
+  size_t new_len = old_len + len;
+  char* old_data = src - sizeof(size_t);
+  char* new_data = xrealloc(old_data, new_len + sizeof(size_t) + 1);
+  char* new_str = new_data + sizeof(size_t);
+  memcpy(new_data, &new_len, sizeof(size_t));
+  memcpy(&new_str[old_len], data, len);
+  new_str[new_len] = '\0';
+  return new_str;
+}
+
+void FreeFlatString(char* str) {
+  xfree(str - sizeof(size_t));
+}
+
+size_t GetFlatStringSize(char* str) {
+  size_t* size = (void*)(str - sizeof(size_t));
+  return *size;
+}
+
+// -----------------------------------------------------------------------------
 // Utilities.
 // -----------------------------------------------------------------------------
 

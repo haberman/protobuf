@@ -367,7 +367,8 @@ void DescriptorPool_mark(void* _self) {
 void DescriptorPool_free(void* _self) {
   DescriptorPool* self = _self;
 
-  upb_symtab_free(self->symtab);
+  // TODO(haberman): don't leak this.
+  // upb_symtab_free(self->symtab);
   upb_handlercache_free(self->fill_handler_cache);
   upb_handlercache_free(self->pb_serialize_handler_cache);
   upb_handlercache_free(self->json_serialize_handler_cache);
@@ -495,9 +496,11 @@ void Descriptor_mark(void* _self) {
 void Descriptor_free(void* _self) {
   Descriptor* self = _self;
   if (self->layout) {
-    free_layout(self->layout);
+    // TODO(haberman): don't leak this.
+    // free_layout(self->layout);
   }
-  xfree(self);
+  // TODO(haberman): don't leak this.
+  // xfree(self);
 }
 
 /*

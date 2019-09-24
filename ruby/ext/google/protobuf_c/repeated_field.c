@@ -51,13 +51,26 @@ void FieldArray_reserve(FieldArray* array, size_t new_size, size_t elem_size) {
   }
 }
 
-void* FieldArray_push(FieldArray* array, void* value, size_t elem_size) {
+void* FieldArray_push(FieldArray* array, size_t elem_size, void* value) {
+  size_t elem_size = native_slot_size(type);
   void* memory;
   FieldArray_reserve(array, array->size + 1, elem_size);
   memory = (void*)(((uint8_t*)array->elements) + array->size * elem_size);
   memcpy(memory, value, elem_size);
   array->size++;
   return memory;
+}
+
+FieldArray* NativeRepeatedField_new() {
+  FieldArray* array = ALLOC(FieldArray);
+  array->elements = NULL;
+  array->capacity = 0;
+  array->size = 0;
+}
+
+void* NativeRepeatedField_push(FieldArray* array, upb_fieldtype_t type,
+                               void* value) {
+  return FieldArray_push(array, native_slot_size(type, value);
 }
 
 // -----------------------------------------------------------------------------
@@ -236,7 +249,8 @@ VALUE RepeatedField_push(VALUE _self, VALUE val) {
   native_slot_init(self->field_type, slot_tmp);
   native_slot_set("", self->field_type, self->field_type_class, slot_tmp, val);
   // native_slot_set may raise an error; add only after set.
-  FieldArray_push(self->array, slot_tmp, native_slot_size(self->field_type));
+  NativeRepeatedField_push(self->array, slot_tmp,
+                           native_slot_size(self->field_type));
   return _self;
 }
 
@@ -250,7 +264,8 @@ VALUE RepeatedField_push_vararg(VALUE _self, VALUE args) {
 
 void* RepeatedField_push_native(VALUE _self, void* data) {
   RepeatedField* self = ruby_to_RepeatedField(_self);
-  return FieldArray_push(self->array, data, native_slot_size(self->field_type));
+  return NativeRepeatedField_push(self->array, data,
+                                  native_slot_size(self->field_type));
 }
 
 void* RepeatedField_index_native(VALUE _self, size_t index) {
@@ -362,7 +377,7 @@ VALUE RepeatedField_dup(VALUE _self) {
   for (i = 0; i < self->array->size; i++, off += elem_size) {
     void* to_mem = (uint8_t*)new_rptfield_self->array->elements + off;
     void* from_mem = (uint8_t*)self->array->elements + off;
-    native_slot_dup(field_type, to_mem, from_mem);
+    native_slot_dup(field_type, to_mem, from_mem, self->field_type_class);
     new_rptfield_self->array->size++;
   }
 
@@ -383,7 +398,7 @@ VALUE RepeatedField_deep_copy(VALUE _self) {
   for (i = 0; i < self->array->size; i++, off += elem_size) {
     void* to_mem = (uint8_t*)new_rptfield_self->array->elements + off;
     void* from_mem = (uint8_t*)self->array->elements + off;
-    native_slot_deep_copy(field_type, to_mem, from_mem);
+    native_slot_deep_copy(field_type, to_mem, from_mem, self->field_type_class);
     new_rptfield_self->array->size++;
   }
 
@@ -456,7 +471,8 @@ VALUE RepeatedField_eq(VALUE _self, VALUE _other) {
     for (i = 0; i < self->array->size; i++, off += elem_size) {
       void* self_mem = ((uint8_t*)self->array->elements) + off;
       void* other_mem = ((uint8_t*)other->array->elements) + off;
-      if (!native_slot_eq(field_type, self_mem, other_mem)) {
+      if (!native_slot_eq(field_type, self_mem, other_mem,
+                          self->field_type_class)) {
         return Qfalse;
       }
     }
@@ -648,10 +664,7 @@ void RepeatedField_free(void* _self) {
  */
 VALUE RepeatedField_alloc(VALUE klass) {
   RepeatedField* self = ALLOC(RepeatedField);
-  self->array = ALLOC(FieldArray);
-  self->array->elements = NULL;
-  self->array->capacity = 0;
-  self->array->size = 0;
+  self->array = NativeRepeatedField_new();
   self->field_type = -1;
   self->field_type_class = Qnil;
   return TypedData_Wrap_Struct(klass, &RepeatedField_type, self);

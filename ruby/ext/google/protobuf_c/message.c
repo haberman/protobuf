@@ -30,9 +30,10 @@
 
 #include "protobuf.h"
 
-void* MessageData_new(MessageLayout* layout) {
+void* MessageData_new(const MessageLayout* layout) {
   void* data = ALLOC_N(uint8_t, layout->size);
   memcpy(data, layout->empty_template, layout->size);
+  layout_init(layout, data);
   return data;
 }
 
@@ -79,7 +80,7 @@ VALUE Message_alloc(VALUE klass) {
 
   msg = ALLOC(MessageHeader);
   msg->descriptor = desc;
-  msg->data = MessageData_new(desc->layout);
+  msg->data = NULL;
 
   ret = TypedData_Wrap_Struct(klass, &Message_type, msg);
   rb_ivar_set(ret, descriptor_instancevar_interned, descriptor);
@@ -499,7 +500,12 @@ VALUE Message_initialize(int argc, VALUE* argv, VALUE _self) {
   VALUE hash_args;
   TypedData_Get_Struct(_self, MessageHeader, &Message_type, self);
 
-  layout_init(self->descriptor->layout, Message_data(self));
+  if (argc == 1 &&
+      (self->data = Message_try_get_initializer(argv[0])) != NULL) {
+    return Qnil;
+  }
+
+  self->data = MessageData_new(self->descriptor->layout);
 
   if (argc == 0) {
     return Qnil;

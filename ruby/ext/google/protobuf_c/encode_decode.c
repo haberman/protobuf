@@ -89,13 +89,16 @@ void stringsink_uninit(stringsink *sink) {
 typedef struct {
   size_t ofs;
   int32_t hasbit;
+  upb_fieldtype_t type;
 } field_handlerdata_t;
 
 // Creates a handlerdata that contains the offset and the hasbit for the field
-static const void* newhandlerdata(upb_handlers* h, uint32_t ofs, int32_t hasbit) {
+static const void* newhandlerdata(upb_handlers* h, uint32_t ofs, int32_t hasbit,
+                                  upb_fieldtype_t type) {
   field_handlerdata_t *hd = ALLOC(field_handlerdata_t);
   hd->ofs = ofs;
   hd->hasbit = hasbit;
+  hd->type = type;
   upb_handlers_addcleanup(h, hd, xfree);
   return hd;
 }
@@ -103,18 +106,18 @@ static const void* newhandlerdata(upb_handlers* h, uint32_t ofs, int32_t hasbit)
 typedef struct {
   size_t ofs;
   int32_t hasbit;
-  VALUE subklass;
+  const MessageLayout* layout;
 } submsg_handlerdata_t;
 
 // Creates a handlerdata that contains offset and submessage type information.
 static const void *newsubmsghandlerdata(upb_handlers* h,
                                         uint32_t ofs,
                                         int32_t hasbit,
-                                        VALUE subklass) {
+                                        MessageLayout* layout) {
   submsg_handlerdata_t *hd = ALLOC(submsg_handlerdata_t);
   hd->ofs = ofs;
   hd->hasbit = hasbit;
-  hd->subklass = subklass;
+  hd->layout = layout;
   upb_handlers_addcleanup(h, hd, xfree);
   return hd;
 }
@@ -123,7 +126,7 @@ typedef struct {
   size_t ofs;              // union data slot
   size_t case_ofs;         // oneof_case field
   uint32_t oneof_case_num; // oneof-case number to place in oneof_case field
-  VALUE subklass;
+  const MessageLayout* layout;
 } oneof_handlerdata_t;
 
 static const void *newoneofhandlerdata(upb_handlers *h,
@@ -144,7 +147,7 @@ static const void *newoneofhandlerdata(upb_handlers *h,
   if (is_value_field(f)) {
     hd->oneof_case_num |= ONEOF_CASE_MASK;
   }
-  hd->subklass = field_type_class(desc->layout, f);
+  hd->layout = desc->layout;
   upb_handlers_addcleanup(h, hd, xfree);
   return hd;
 }
@@ -154,7 +157,15 @@ static const void *newoneofhandlerdata(upb_handlers *h,
 static void *startseq_handler(void* closure, const void* hd) {
   MessageHeader* msg_data = closure;
   const size_t *ofs = hd;
-  return (void*)DEREF(msg_data, *ofs, VALUE);
+  VALUE val = DEREF(msg_data, *ofs, VALUE);
+  FieldArray* ptr = get_tagged_ptr(val);
+
+  if (!ptr) {
+    ptr = NativeRepeatedField_new();
+    DEREF(msg_data, *ofs, VALUE) = tag_ptr(ptr);
+  }
+
+  return ptr;
 }
 
 // Handlers that append primitive values to a repeated field.
@@ -183,16 +194,18 @@ static void set_hasbit(void *closure, int32_t hasbit) {
 
 static void* startrepeatedstring_handler(void* closure, const void* hd,
                                          size_t size_hint) {
-  VALUE ary = (VALUE)closure;
+  const field_handlerdata_t* field_data = hd;
+  FieldArray* ary = closure;
   VALUE empty = get_frozen_string(NULL, 0, false);
-  return RepeatedField_push_native(ary, &empty);
+  return RepeatedField_push_native(ary, field_data->type, &empty);
 }
 
 static void* startrepeatedbytes_handler(void* closure, const void* hd,
                                         size_t size_hint) {
-  VALUE ary = (VALUE)closure;
+  const field_handlerdata_t* field_data = hd;
+  FieldArray* ary = closure;
   VALUE empty = get_frozen_string(NULL, 0, true);
-  return RepeatedField_push_native(ary, &empty);
+  return RepeatedField_push_native(ary, field_data->type &empty);
 }
 
 static void* startfield_handler(void* closure, const void* hd,
@@ -219,32 +232,24 @@ static size_t stringdata_handler(void* closure, const void* hd,
 static void *appendsubmsg_handler(void *closure, const void *hd) {
   VALUE ary = (VALUE)closure;
   const submsg_handlerdata_t *submsgdata = hd;
-  MessageHeader* submsg;
+  void* submsg = MessageData_new(submsgdata->layout);
 
-  VALUE submsg_rb = rb_class_new_instance(0, NULL, submsgdata->subklass);
-  RepeatedField_push(ary, submsg_rb);
-
-  TypedData_Get_Struct(submsg_rb, MessageHeader, &Message_type, submsg);
-  return submsg->data;
+  return RepeatedField_push_native(ary, UPB_TYPE_MESSAGE, submsg);
 }
 
 // Sets a non-repeated submessage field in a message.
 static void *submsg_handler(void *msg_data, const void *hd) {
   const submsg_handlerdata_t* submsgdata = hd;
-  VALUE submsg_rb;
-  MessageHeader* submsg;
+  VALUE val = DEREF(msg_data, submsgdata->ofs, VALUE);
+  void* submsg = get_tagged_ptr(val);
 
-  if (DEREF(msg_data, submsgdata->ofs, VALUE) == Qnil) {
-    DEREF(msg_data, submsgdata->ofs, VALUE) =
-        rb_class_new_instance(0, NULL, submsgdata->subklass);
+  if (!submsg) {
+    submsg = MessageData_new(submsgdata->layout);
+    DEREF(msg_data, submsgdata->ofs, VALUE) = tag_ptr(submsg);
   }
 
   set_hasbit(msg_data, submsgdata->hasbit);
-
-  submsg_rb = DEREF(msg_data, submsgdata->ofs, VALUE);
-  TypedData_Get_Struct(submsg_rb, MessageHeader, &Message_type, submsg);
-
-  return submsg->data;
+  return submsg;
 }
 
 // Handler data for startmap/endmap handlers.
@@ -393,26 +398,21 @@ static void* startoneof_handler(void* msg_data, const void* hd,
 static void* oneofsubmsg_handler(void* msg_data, const void* hd) {
   const oneof_handlerdata_t* oneofdata = hd;
   uint32_t oldcase = DEREF(msg_data, oneofdata->case_ofs, uint32_t);
+  void* submsg;
 
-  VALUE submsg_rb;
-  MessageHeader* submsg;
-
-  if (oldcase != oneofdata->oneof_case_num ||
-      DEREF(msg_data, oneofdata->ofs, VALUE) == Qnil) {
-    DEREF(msg_data, oneofdata->ofs, VALUE) =
-        rb_class_new_instance(0, NULL, oneofdata->subklass);
+  if (oldcase == oneofdata->oneof_case_num) {
+    VALUE val = DEREF(msg_data, oneofdata->ofs, VALUE);
+    submsg = get_tagged_ptr(val);
+  } else {
+    // TODO(haberman): free existing data here.
+    submsg = MessageData_new(oneofdata->layout);
+    DEREF(msg_data, oneofdata->ofs, VALUE) = tag_ptr(submsg);
   }
-  // Set the oneof case *after* allocating the new class instance -- otherwise,
-  // if the Ruby GC is invoked as part of a call into the VM, it might invoke
-  // our mark routines, and our mark routines might see the case value
-  // indicating a VALUE is present and expect a valid VALUE. See comment in
-  // layout_set() for more detail: basically, the change to the value and the
-  // case must be atomic w.r.t. the Ruby VM.
+  // Note: the change to the value and the case must be atomic w.r.t. the Ruby
+  // VM.
   DEREF(msg_data, oneofdata->case_ofs, uint32_t) = oneofdata->oneof_case_num;
 
-  submsg_rb = DEREF(msg_data, oneofdata->ofs, VALUE);
-  TypedData_Get_Struct(submsg_rb, MessageHeader, &Message_type, submsg);
-  return submsg->data;
+  return submsg;
 }
 
 // Set up handlers for a repeated field.
@@ -421,7 +421,7 @@ static void add_handlers_for_repeated_field(upb_handlers *h,
                                             const upb_fielddef *f,
                                             size_t offset) {
   upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-  attr.handler_data = newhandlerdata(h, offset, -1);
+  attr.handler_data = newhandlerdata(h, offset, -1, upb_fielddef_type(f));
   upb_handlers_setstartseq(h, f, startseq_handler, &attr);
 
   switch (upb_fielddef_type(f)) {
@@ -451,9 +451,8 @@ static void add_handlers_for_repeated_field(upb_handlers *h,
       upb_handlers_setstring(h, f, stringdata_handler, NULL);
       break;
     case UPB_TYPE_MESSAGE: {
-      VALUE subklass = field_type_class(desc->layout, f);
       upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-      attr.handler_data = newsubmsghandlerdata(h, 0, -1, subklass);
+      attr.handler_data = newsubmsghandlerdata(h, 0, -1, desc->layout);
       upb_handlers_setstartsubmsg(h, f, appendsubmsg_handler, &attr);
       break;
     }
@@ -486,15 +485,15 @@ static void add_handlers_for_singular_field(const Descriptor* desc,
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
       upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-      attr.handler_data = newhandlerdata(h, offset, hasbit);
+      attr.handler_data =
+          newhandlerdata(h, offset, hasbit, upb_fielddef_type(f));
       upb_handlers_setstartstr(h, f, startfield_handler, &attr),
       upb_handlers_setstring(h, f, stringdata_handler, NULL);
       break;
     }
     case UPB_TYPE_MESSAGE: {
       upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-      attr.handler_data = newsubmsghandlerdata(
-          h, offset, hasbit, field_type_class(desc->layout, f));
+      attr.handler_data = newsubmsghandlerdata(h, offset, hasbit, desc->layout);
       upb_handlers_setstartsubmsg(h, f, submsg_handler, &attr);
       break;
     }

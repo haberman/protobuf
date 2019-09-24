@@ -352,9 +352,12 @@ VALUE native_slot_get(upb_fieldtype_t type,
                       const void* memory);
 void native_slot_init(upb_fieldtype_t type, void* memory);
 void native_slot_mark(upb_fieldtype_t type, void* memory);
-void native_slot_dup(upb_fieldtype_t type, void* to, void* from);
-void native_slot_deep_copy(upb_fieldtype_t type, void* to, void* from);
-bool native_slot_eq(upb_fieldtype_t type, void* mem1, void* mem2);
+void native_slot_dup(upb_fieldtype_t type, void* to, void* from,
+                     VALUE type_class);
+void native_slot_deep_copy(upb_fieldtype_t type, void* to, void* from,
+                           VALUE type_class);
+bool native_slot_eq(upb_fieldtype_t type, void* mem1, void* mem2,
+                    VALUE type_class);
 
 VALUE native_slot_encode_and_freeze_string(upb_fieldtype_t type, VALUE value);
 void native_slot_check_int_range_precision(const char* name, upb_fieldtype_t type, VALUE value);
@@ -413,6 +416,10 @@ extern VALUE cRepeatedField;
 
 RepeatedField* ruby_to_RepeatedField(VALUE value);
 
+FieldArray* NativeRepeatedField_new();
+void* NativeRepeatedField_push(FieldArray* arr, upb_fieldtype_t type,
+                               void* data);
+
 VALUE RepeatedField_new_this_type(VALUE _self);
 VALUE RepeatedField_each(VALUE _self);
 VALUE RepeatedField_index(int argc, VALUE* argv, VALUE _self);
@@ -461,6 +468,10 @@ extern const rb_data_type_t Map_type;
 extern VALUE cMap;
 
 Map* ruby_to_Map(VALUE value);
+
+upb_strtable* NativeMap_new();
+void* NativeMap_set(upb_strtable* map, upb_fieldtype_t key_type,
+                    upb_fieldtype_t value_ type, void* key, void* value);
 
 VALUE Map_new_this_type(VALUE _self);
 VALUE Map_each(VALUE _self);
@@ -542,7 +553,6 @@ VALUE layout_has(MessageLayout* layout,
 void layout_clear(MessageLayout* layout,
                  const void* storage,
                  const upb_fielddef* field);
-void layout_init(MessageLayout* layout, void* storage);
 void layout_mark(MessageLayout* layout, void* storage);
 void layout_free(MessageLayout* layout, void* storage);
 void layout_dup(MessageLayout* layout, void* to, void* from);
@@ -574,7 +584,11 @@ struct MessageHeader {
 
 extern rb_data_type_t Message_type;
 
+VALUE Message_make_initializer(void* data);
+void* Message_try_get_initializer(VALUE);
+
 VALUE build_class_from_descriptor(VALUE descriptor);
+void* MessageData_new(const MessageLayout* layout);
 void* Message_data(MessageHeader* msg);
 void Message_mark(void* self);
 void Message_free(void* self);

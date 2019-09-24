@@ -533,7 +533,7 @@ VALUE Map_dup(VALUE _self) {
     void* mem = value_memory(&v);
     upb_value dup;
     void* dup_mem = value_memory(&dup);
-    native_slot_dup(self->value_type, dup_mem, mem);
+    native_slot_dup(self->value_type, dup_mem, mem, self->value_type_class);
 
     if (!upb_strtable_insert2(new_self->table,
                               upb_strtable_iter_key(&it),
@@ -561,7 +561,8 @@ VALUE Map_deep_copy(VALUE _self) {
     void* mem = value_memory(&v);
     upb_value dup;
     void* dup_mem = value_memory(&dup);
-    native_slot_deep_copy(self->value_type, dup_mem, mem);
+    native_slot_deep_copy(self->value_type, dup_mem, mem,
+                          self->value_type_class);
 
     if (!upb_strtable_insert2(new_self->table,
                               upb_strtable_iter_key(&it),
@@ -633,7 +634,8 @@ VALUE Map_eq(VALUE _self, VALUE _other) {
       return Qfalse;
     }
 
-    if (!native_slot_eq(self->value_type, mem, other_mem)) {
+    if (!native_slot_eq(self->value_type, mem, other_mem,
+                        self->value_type_class)) {
       // Present, but value not equal.
       return Qfalse;
     }

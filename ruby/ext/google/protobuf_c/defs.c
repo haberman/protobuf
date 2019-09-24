@@ -2218,6 +2218,41 @@ VALUE Builder_build(VALUE _self) {
   return Qnil;
 }
 
+// -----------------------------------------------------------------------------
+// MessagePointerInitializer
+// -----------------------------------------------------------------------------
+
+typedef struct {
+  void* ptr;
+} MessagePointerInitializer;
+
+VALUE cMessagePointerInitializer = Qnil;
+const rb_data_type_t _MessagePointerInitializer_type = {
+"Google::Protobuf::MessagePointerInitializer", {NULL, NULL, NULL}};
+
+VALUE Message_make_initializer(void* ptr) {
+  MessagePointerInitializer* data;
+  VALUE ret = TypedData_Make_Struct(cMessagePointerInitializer,
+                                    MessagePointerInitializer,
+                                    &_MessagePointerInitializer_type, data);
+  data->ptr = ptr;
+  return ret;
+}
+
+void* Message_try_get_initializer(VALUE val) {
+  MessagePointerInitializer* data;
+  if (CLASS_OF(val) != cMessagePointerInitializer) {
+    return NULL;
+  }
+  TypedData_Get_Struct(val, MessagePointerInitializer,
+                       &_MessagePointerInitializer_type, data);
+  return data->ptr;
+}
+
+// -----------------------------------------------------------------------------
+// Def object cache.
+// -----------------------------------------------------------------------------
+
 static VALUE get_def_obj(VALUE _descriptor_pool, const void* ptr, VALUE klass) {
   DEFINE_SELF(DescriptorPool, descriptor_pool, _descriptor_pool);
   VALUE key = ULL2NUM((intptr_t)ptr);

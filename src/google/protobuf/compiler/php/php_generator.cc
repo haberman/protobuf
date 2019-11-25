@@ -1650,9 +1650,8 @@ void GenerateServiceMethodDocComment(io::Printer* printer,
     "return_type", EscapePhpdoc(FullClassName(method->output_type(), false)));
 }
 
-bool Generator::Generate(const FileDescriptor* file, const string& parameter,
-                         GeneratorContext* generator_context,
-                         string* error) const {
+bool DoGenerate(const FileDescriptor* file, const std::string& parameter,
+                GeneratorContext* generator_context, std::string* error) {
   bool is_descriptor = parameter == "internal";
 
   if (is_descriptor && file->name() != kDescriptorFile) {
@@ -1670,6 +1669,18 @@ bool Generator::Generate(const FileDescriptor* file, const string& parameter,
 
   GenerateFile(file, is_descriptor, generator_context);
 
+  return true;
+}
+
+bool Generator::GenerateAll(const std::vector<const FileDescriptor*>& files,
+                            const std::string& parameter,
+                            GeneratorContext* generator_context,
+                            std::string* error) const {
+  for (auto file : files) {
+    if (!DoGenerate(file, parameter, generator_context, error)) {
+      return false;
+    }
+  }
   return true;
 }
 

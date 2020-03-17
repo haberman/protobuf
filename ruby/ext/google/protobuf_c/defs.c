@@ -36,6 +36,20 @@
 // Common utilities.
 // -----------------------------------------------------------------------------
 
+#define DEFINE_CLASS(name, string_name)                    \
+  VALUE c##name = Qnil;                                    \
+  const rb_data_type_t _##name##_type = {                  \
+      string_name,                                         \
+      {name##_mark, RUBY_DEFAULT_FREE, NULL},              \
+  };                                                       \
+  name* ruby_to_##name(VALUE val) {                        \
+    name* ret;                                             \
+    TypedData_Get_Struct(val, name, &_##name##_type, ret); \
+    return ret;                                            \
+  }
+
+#define DEFINE_SELF(type, var, rb_var) type* var = ruby_to_##type(rb_var)
+
 static const char* get_str(VALUE str) {
   Check_Type(str, T_STRING);
   return RSTRING_PTR(str);
@@ -47,6 +61,10 @@ static VALUE rb_str_maybe_null(const char* s) {
   }
   return rb_str_new2(s);
 }
+
+// -----------------------------------------------------------------------------
+// Backward compat logic.
+// -----------------------------------------------------------------------------
 
 static void rewrite_enum_default(const upb_symtab* symtab,
                                  google_protobuf_FileDescriptorProto* file,
@@ -249,7 +267,7 @@ static void rewrite_nesting(VALUE msg_ent, google_protobuf_DescriptorProto* msg,
 static void rewrite_names(VALUE _file_builder,
                           google_protobuf_FileDescriptorProto* file_proto) {
   FileBuilderContext* file_builder = ruby_to_FileBuilderContext(_file_builder);
-  upb_arena *arena = file_builder->arena;
+  Arena *arena = ruby_to_Arena(file_builder->arena);
   // Build params (package, msg_names, enum_names).
   VALUE package = Qnil;
   VALUE msg_names = rb_ary_new();
@@ -320,7 +338,7 @@ static void rewrite_names(VALUE _file_builder,
     VALUE msg_ent = rb_ary_entry(msg_ents, i);
     VALUE pos = rb_hash_aref(msg_ent, ID2SYM(rb_intern("pos")));
     msgs[i] = msgs[NUM2INT(pos)];
-    rewrite_nesting(msg_ent, msgs[i], msgs, enums, arena);
+    rewrite_nesting(msg_ent, msgs[i], msgs, enums, arena->arena);
   }
 
   for (i = 0; i < (size_t)RARRAY_LEN(enum_ents); i++) {
@@ -329,52 +347,40 @@ static void rewrite_names(VALUE _file_builder,
   }
 
   google_protobuf_FileDescriptorProto_resize_message_type(
-      file_proto, RARRAY_LEN(msg_ents), arena);
+      file_proto, RARRAY_LEN(msg_ents), arena->arena);
   google_protobuf_FileDescriptorProto_resize_enum_type(
-      file_proto, RARRAY_LEN(enum_ents), arena);
+      file_proto, RARRAY_LEN(enum_ents), arena->arena);
 }
 
 // -----------------------------------------------------------------------------
 // DescriptorPool.
 // -----------------------------------------------------------------------------
 
-#define DEFINE_CLASS(name, string_name)                             \
-    VALUE c ## name = Qnil;                                         \
-    const rb_data_type_t _ ## name ## _type = {                     \
-      string_name,                                                  \
-      { name ## _mark, name ## _free, NULL },                       \
-    };                                                              \
-    name* ruby_to_ ## name(VALUE val) {                             \
-      name* ret;                                                    \
-      TypedData_Get_Struct(val, name, &_ ## name ## _type, ret);    \
-      return ret;                                                   \
-    }                                                               \
-
-#define DEFINE_SELF(type, var, rb_var)                              \
-    type* var = ruby_to_ ## type(rb_var)
-
 // Global singleton DescriptorPool. The user is free to create others, but this
 // is used by generated code.
 VALUE generated_pool = Qnil;
 
-DEFINE_CLASS(DescriptorPool, "Google::Protobuf::DescriptorPool");
+VALUE cDescriptorPool = Qnil;
+
+const rb_data_type_t _DescriptorPool_type = {
+    "Google::Protobuf::DescriptorPool",
+    {DescriptorPool_mark, DescriptorPool_free, NULL},
+};
+
+DescriptorPool* ruby_to_DescriptorPool(VALUE val) {
+  DescriptorPool* ret;
+  TypedData_Get_Struct(val, DescriptorPool, &_DescriptorPool_type, ret);
+  return ret;
+}
 
 void DescriptorPool_mark(void* _self) {
   DescriptorPool* self = _self;
-  rb_gc_mark(self->def_to_descriptor);
+  rb_gc_mark(self->arena);
 }
 
 void DescriptorPool_free(void* _self) {
   DescriptorPool* self = _self;
-
   upb_symtab_free(self->symtab);
-  upb_handlercache_free(self->fill_handler_cache);
-  upb_handlercache_free(self->pb_serialize_handler_cache);
-  upb_handlercache_free(self->json_serialize_handler_cache);
-  upb_handlercache_free(self->json_serialize_handler_preserve_cache);
-  upb_pbcodecache_free(self->fill_method_cache);
-  upb_json_codecache_free(self->json_fill_method_cache);
-
   xfree(self);
 }
 
@@ -388,19 +394,11 @@ VALUE DescriptorPool_alloc(VALUE klass) {
   DescriptorPool* self = ALLOC(DescriptorPool);
   VALUE ret;
 
-  self->def_to_descriptor = Qnil;
+  self->arena = Qnil;
   ret = TypedData_Wrap_Struct(klass, &_DescriptorPool_type, self);
 
-  self->def_to_descriptor = rb_hash_new();
+  self->arena = rb_class_new_instance(0, NULL, cArena);
   self->symtab = upb_symtab_new();
-  self->fill_handler_cache =
-      upb_handlercache_new(add_handlers_for_message, (void*)ret);
-  self->pb_serialize_handler_cache = upb_pb_encoder_newcache();
-  self->json_serialize_handler_cache = upb_json_printer_newcache(false);
-  self->json_serialize_handler_preserve_cache =
-      upb_json_printer_newcache(true);
-  self->fill_method_cache = upb_pbcodecache_new(self->fill_handler_cache);
-  self->json_fill_method_cache = upb_json_codecache_new();
 
   return ret;
 }
@@ -487,17 +485,6 @@ void Descriptor_mark(void* _self) {
   Descriptor* self = _self;
   rb_gc_mark(self->klass);
   rb_gc_mark(self->descriptor_pool);
-  if (self->layout && self->layout->empty_template) {
-    layout_mark(self->layout, self->layout->empty_template);
-  }
-}
-
-void Descriptor_free(void* _self) {
-  Descriptor* self = _self;
-  if (self->layout) {
-    free_layout(self->layout);
-  }
-  xfree(self);
 }
 
 /*
@@ -515,7 +502,6 @@ VALUE Descriptor_alloc(VALUE klass) {
   self->msgdef = NULL;
   self->klass = Qnil;
   self->descriptor_pool = Qnil;
-  self->layout = NULL;
   return ret;
 }
 
@@ -678,10 +664,6 @@ DEFINE_CLASS(FileDescriptor, "Google::Protobuf::FileDescriptor");
 void FileDescriptor_mark(void* _self) {
   FileDescriptor* self = _self;
   rb_gc_mark(self->descriptor_pool);
-}
-
-void FileDescriptor_free(void* _self) {
-  xfree(_self);
 }
 
 VALUE FileDescriptor_alloc(VALUE klass) {
@@ -993,7 +975,37 @@ VALUE FieldDescriptor_type(VALUE _self) {
  */
 VALUE FieldDescriptor_default(VALUE _self) {
   DEFINE_SELF(FieldDescriptor, self, _self);
-  return layout_get_default(self->fielddef);
+  const upb_fielddef *field = self->fielddef;
+
+  switch (upb_fielddef_type(field)) {
+    case UPB_TYPE_FLOAT:   return DBL2NUM(upb_fielddef_defaultfloat(field));
+    case UPB_TYPE_DOUBLE:  return DBL2NUM(upb_fielddef_defaultdouble(field));
+    case UPB_TYPE_BOOL:
+      return upb_fielddef_defaultbool(field) ? Qtrue : Qfalse;
+    case UPB_TYPE_ENUM: {
+      const upb_enumdef *enumdef = upb_fielddef_enumsubdef(field);
+      int32_t num = upb_fielddef_defaultint32(field);
+      const char *label = upb_enumdef_iton(enumdef, num);
+      if (label) {
+        return ID2SYM(rb_intern(label));
+      } else {
+        return INT2NUM(num);
+      }
+    }
+    case UPB_TYPE_INT32:   return INT2NUM(upb_fielddef_defaultint32(field));
+    case UPB_TYPE_INT64:   return LL2NUM(upb_fielddef_defaultint64(field));;
+    case UPB_TYPE_UINT32:  return UINT2NUM(upb_fielddef_defaultuint32(field));
+    case UPB_TYPE_UINT64:  return ULL2NUM(upb_fielddef_defaultuint64(field));
+    case UPB_TYPE_STRING:
+    case UPB_TYPE_BYTES: {
+      size_t size;
+      const char *str = upb_fielddef_defaultstr(field, &size);
+      return get_frozen_string(str, size,
+                               upb_fielddef_type(field) == UPB_TYPE_BYTES);
+    }
+    case UPB_TYPE_MESSAGE: return Qnil;
+    default: return Qnil;
+  }
 }
 
 /*
@@ -1736,14 +1748,15 @@ VALUE MessageBuilderContext_oneof(VALUE _self, VALUE name) {
   size_t oneof_count;
   FileBuilderContext* file_context =
       ruby_to_FileBuilderContext(self->file_builder);
+  Arena* arena = ruby_to_Arena(file_context->arena);
   google_protobuf_OneofDescriptorProto* oneof_proto;
 
   // Existing oneof_count becomes oneof_index.
   google_protobuf_DescriptorProto_oneof_decl(self->msg_proto, &oneof_count);
 
   // Create oneof_proto and set its name.
-  oneof_proto = google_protobuf_DescriptorProto_add_oneof_decl(
-      self->msg_proto, file_context->arena);
+  oneof_proto = google_protobuf_DescriptorProto_add_oneof_decl(self->msg_proto,
+                                                               arena->arena);
   google_protobuf_OneofDescriptorProto_set_name(
       oneof_proto, FileBuilderContext_strdup_sym(self->file_builder, name));
 
@@ -1768,10 +1781,6 @@ DEFINE_CLASS(OneofBuilderContext,
 void OneofBuilderContext_mark(void* _self) {
   OneofBuilderContext* self = _self;
   rb_gc_mark(self->message_builder);
-}
-
-void OneofBuilderContext_free(void* _self) {
-  xfree(_self);
 }
 
 VALUE OneofBuilderContext_alloc(VALUE klass) {
@@ -1844,10 +1853,6 @@ DEFINE_CLASS(EnumBuilderContext,
 void EnumBuilderContext_mark(void* _self) {
   EnumBuilderContext* self = _self;
   rb_gc_mark(self->file_builder);
-}
-
-void EnumBuilderContext_free(void* _self) {
-  xfree(_self);
 }
 
 VALUE EnumBuilderContext_alloc(VALUE klass) {
@@ -1927,12 +1932,6 @@ DEFINE_CLASS(FileBuilderContext,
 void FileBuilderContext_mark(void* _self) {
   FileBuilderContext* self = _self;
   rb_gc_mark(self->descriptor_pool);
-}
-
-void FileBuilderContext_free(void* _self) {
-  FileBuilderContext* self = _self;
-  upb_arena_free(self->arena);
-  xfree(self);
 }
 
 upb_strview FileBuilderContext_strdup2(VALUE _self, const char *str) {

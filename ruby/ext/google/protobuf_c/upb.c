@@ -1,5 +1,5 @@
 /* Amalgamated source file */
-#include "upb.h"
+#include "lite-upb.h"
 /*
 * This is where we define macros used across upb.
 *
@@ -22,9 +22,7 @@
 *
 * This file is private and must not be included by users!
 */
-#ifndef UINTPTR_MAX
-#error must include stdint.h first
-#endif
+#include <stdint.h>
 
 #if UINTPTR_MAX == 0xffffffff
 #define UPB_SIZE(size32, size64) size32
@@ -32,6 +30,9 @@
 #define UPB_SIZE(size32, size64) size64
 #endif
 
+/* These macros aren't really "port", they are helper macros that we don't want
+ * to leak.
+ */
 #define UPB_FIELD_AT(msg, fieldtype, offset) \
   *(fieldtype*)((const char*)(msg) + offset)
 
@@ -43,6 +44,8 @@
 #define UPB_WRITE_ONEOF(msg, fieldtype, offset, value, case_offset, case_val) \
   UPB_FIELD_AT(msg, int, case_offset) = case_val;                             \
   UPB_FIELD_AT(msg, fieldtype, offset) = value;
+
+#define UPB_MAPTYPE_STRING 0
 
 /* UPB_INLINE: inline if possible, emit standalone code if required. */
 #ifdef __cplusplus
@@ -116,7 +119,7 @@ int msvc_vsnprintf(char* s, size_t n, const char* format, va_list arg);
 #ifdef __cplusplus
 #if __cplusplus >= 201103L || defined(__GXX_EXPERIMENTAL_CXX0X__) || \
     (defined(_MSC_VER) && _MSC_VER >= 1900)
-// C++11 is present
+/* C++11 is present */
 #else
 #error upb requires C++11 for C++ support
 #endif
@@ -126,6 +129,18 @@ int msvc_vsnprintf(char* s, size_t n, const char* format, va_list arg);
 #define UPB_MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #define UPB_UNUSED(var) (void)var
+
+/* UPB_ASSUME(): in release mode, we tell the compiler to assume this is true.
+ */
+#ifdef NDEBUG
+#ifdef __GNUC__
+#define UPB_ASSUME(expr) if (!(expr)) __builtin_unreachable()
+#else
+#define UPB_ASSUME(expr) do {} if (false && (expr))
+#endif
+#else
+#define UPB_ASSUME(expr) assert(expr)
+#endif
 
 /* UPB_ASSERT(): in release mode, we use the expression without letting it be
  * evaluated.  This prevents "unused variable" warnings. */
@@ -157,8 +172,8 @@ int msvc_vsnprintf(char* s, size_t n, const char* format, va_list arg);
 
 
 /* Maps descriptor type -> upb field type.  */
-const uint8_t upb_desctype_to_fieldtype[] = {
-  UPB_WIRE_TYPE_END_GROUP,  /* ENDGROUP */
+static const uint8_t desctype_to_fieldtype[] = {
+  -1,  /* invalid descriptor type */
   UPB_TYPE_DOUBLE,          /* DOUBLE */
   UPB_TYPE_FLOAT,           /* FLOAT */
   UPB_TYPE_INT64,           /* INT64 */
@@ -179,9 +194,31 @@ const uint8_t upb_desctype_to_fieldtype[] = {
   UPB_TYPE_INT64,           /* SINT64 */
 };
 
+/* Maps descriptor type -> upb map size.  */
+static const uint8_t desctype_to_mapsize[] = {
+  -1,  /* invalid descriptor type */
+  8,          /* DOUBLE */
+  4,          /* FLOAT */
+  8,          /* INT64 */
+  8,          /* UINT64 */
+  4,          /* INT32 */
+  8,          /* FIXED64 */
+  4,          /* FIXED32 */
+  1,          /* BOOL */
+  UPB_MAPTYPE_STRING,    /* STRING */
+  sizeof(void*),         /* GROUP */
+  sizeof(void*),         /* MESSAGE */
+  UPB_MAPTYPE_STRING,    /* BYTES */
+  4,          /* UINT32 */
+  4,          /* ENUM */
+  4,          /* SFIXED32 */
+  8,          /* SFIXED64 */
+  4,          /* SINT32 */
+  8,          /* SINT64 */
+};
+
 /* Data pertaining to the parse. */
 typedef struct {
-  const char *ptr;           /* Current parsing position. */
   const char *field_start;   /* Start of this field. */
   const char *limit;         /* End of delimited region or end of buffer. */
   upb_arena *arena;
@@ -189,60 +226,50 @@ typedef struct {
   uint32_t end_group;  /* Set to field number of END_GROUP tag, if any. */
 } upb_decstate;
 
-/* Data passed by value to each parsing function. */
-typedef struct {
-  char *msg;
-  const upb_msglayout *layout;
-  upb_decstate *state;
-} upb_decframe;
-
 #define CHK(x) if (!(x)) { return 0; }
+#define PTR_AT(msg, ofs, type) (type*)((const char*)msg + ofs)
 
-static bool upb_skip_unknowngroup(upb_decstate *d, int field_number);
-static bool upb_decode_message(upb_decstate *d, char *msg,
-                               const upb_msglayout *l);
+static const char *upb_decode_message(const char *ptr, const upb_msglayout *l,
+                                      upb_msg *msg, upb_decstate *d);
 
-static bool upb_decode_varint(const char **ptr, const char *limit,
-                              uint64_t *val) {
+static const char *upb_decode_varint(const char *ptr, const char *limit,
+                                     uint64_t *val) {
   uint8_t byte;
   int bitpos = 0;
-  const char *p = *ptr;
   *val = 0;
 
   do {
-    CHK(bitpos < 70 && p < limit);
-    byte = *p;
+    CHK(bitpos < 70 && ptr < limit);
+    byte = *ptr;
     *val |= (uint64_t)(byte & 0x7F) << bitpos;
-    p++;
+    ptr++;
     bitpos += 7;
   } while (byte & 0x80);
 
-  *ptr = p;
-  return true;
+  return ptr;
 }
 
-static bool upb_decode_varint32(const char **ptr, const char *limit,
-                                uint32_t *val) {
+static const char *upb_decode_varint32(const char *ptr, const char *limit,
+                                       uint32_t *val) {
   uint64_t u64;
-  CHK(upb_decode_varint(ptr, limit, &u64) && u64 <= UINT32_MAX);
+  CHK(ptr = upb_decode_varint(ptr, limit, &u64))
+  CHK(u64 <= UINT32_MAX);
   *val = (uint32_t)u64;
-  return true;
+  return ptr;
 }
 
-static bool upb_decode_64bit(const char **ptr, const char *limit,
-                             uint64_t *val) {
-  CHK(limit - *ptr >= 8);
-  memcpy(val, *ptr, 8);
-  *ptr += 8;
-  return true;
+static const char *upb_decode_64bit(const char *ptr, const char *limit,
+                                    uint64_t *val) {
+  CHK(limit - ptr >= 8);
+  memcpy(val, ptr, 8);
+  return ptr + 8;
 }
 
-static bool upb_decode_32bit(const char **ptr, const char *limit,
-                             uint32_t *val) {
-  CHK(limit - *ptr >= 4);
-  memcpy(val, *ptr, 4);
-  *ptr += 4;
-  return true;
+static const char *upb_decode_32bit(const char *ptr, const char *limit,
+                                    uint32_t *val) {
+  CHK(limit - ptr >= 4);
+  memcpy(val, ptr, 4);
+  return ptr + 4;
 }
 
 static int32_t upb_zzdecode_32(uint32_t n) {
@@ -253,99 +280,72 @@ static int64_t upb_zzdecode_64(uint64_t n) {
   return (n >> 1) ^ -(int64_t)(n & 1);
 }
 
-static bool upb_decode_string(const char **ptr, const char *limit,
-                              int *outlen) {
+static const char *upb_decode_string(const char *ptr, const char *limit,
+                                     int *outlen) {
   uint32_t len;
 
-  CHK(upb_decode_varint32(ptr, limit, &len) &&
-      len < INT32_MAX &&
-      limit - *ptr >= (int32_t)len);
+  CHK(ptr = upb_decode_varint32(ptr, limit, &len));
+  CHK(len < INT32_MAX);
+  CHK(limit - ptr >= (int32_t)len);
 
   *outlen = len;
-  return true;
+  return ptr;
 }
 
 static void upb_set32(void *msg, size_t ofs, uint32_t val) {
   memcpy((char*)msg + ofs, &val, sizeof(val));
 }
 
-static bool upb_append_unknown(upb_decstate *d, upb_decframe *frame) {
-  upb_msg_addunknown(frame->msg, d->field_start, d->ptr - d->field_start,
-                     d->arena);
-  return true;
+static const char *upb_append_unknown(const char *ptr, upb_msg *msg,
+                                      upb_decstate *d) {
+  upb_msg_addunknown(msg, d->field_start, ptr - d->field_start, d->arena);
+  return ptr;
 }
 
-
-static bool upb_skip_unknownfielddata(upb_decstate *d, uint32_t tag,
-                                      uint32_t group_fieldnum) {
+static const char *upb_skip_unknownfielddata(const char *ptr, upb_decstate *d,
+                                             uint32_t tag) {
   switch (tag & 7) {
     case UPB_WIRE_TYPE_VARINT: {
       uint64_t val;
-      return upb_decode_varint(&d->ptr, d->limit, &val);
+      return upb_decode_varint(ptr, d->limit, &val);
     }
     case UPB_WIRE_TYPE_32BIT: {
       uint32_t val;
-      return upb_decode_32bit(&d->ptr, d->limit, &val);
+      return upb_decode_32bit(ptr, d->limit, &val);
     }
     case UPB_WIRE_TYPE_64BIT: {
       uint64_t val;
-      return upb_decode_64bit(&d->ptr, d->limit, &val);
+      return upb_decode_64bit(ptr, d->limit, &val);
     }
     case UPB_WIRE_TYPE_DELIMITED: {
       int len;
-      CHK(upb_decode_string(&d->ptr, d->limit, &len));
-      d->ptr += len;
-      return true;
+      CHK(ptr = upb_decode_string(ptr, d->limit, &len));
+      return ptr + len;
     }
-    case UPB_WIRE_TYPE_START_GROUP:
-      return upb_skip_unknowngroup(d, tag >> 3);
+    case UPB_WIRE_TYPE_START_GROUP: {
+      uint32_t field_number = tag >> 3;
+      while (ptr < d->limit && d->end_group == 0) {
+        uint32_t tag = 0;
+        CHK(ptr = upb_decode_varint32(ptr, d->limit, &tag));
+        CHK(ptr = upb_skip_unknownfielddata(ptr, d, tag));
+      }
+      CHK(d->end_group == field_number);
+      d->end_group = 0;
+      return ptr;
+    }
     case UPB_WIRE_TYPE_END_GROUP:
-      return (tag >> 3) == group_fieldnum;
+      d->end_group = tag >> 3;
+      return ptr;
   }
   return false;
-}
-
-static bool upb_skip_unknowngroup(upb_decstate *d, int field_number) {
-  while (d->ptr < d->limit && d->end_group == 0) {
-    uint32_t tag = 0;
-    CHK(upb_decode_varint32(&d->ptr, d->limit, &tag));
-    CHK(upb_skip_unknownfielddata(d, tag, field_number));
-  }
-
-  CHK(d->end_group == field_number);
-  d->end_group = 0;
-  return true;
-}
-
-static bool upb_array_grow(upb_array *arr, size_t elements, size_t elem_size,
-                           upb_arena *arena) {
-  size_t needed = arr->len + elements;
-  size_t new_size = UPB_MAX(arr->size, 8);
-  size_t new_bytes;
-  size_t old_bytes;
-  void *new_data;
-  upb_alloc *alloc = upb_arena_alloc(arena);
-
-  while (new_size < needed) {
-    new_size *= 2;
-  }
-
-  old_bytes = arr->len * elem_size;
-  new_bytes = new_size * elem_size;
-  new_data = upb_realloc(alloc, arr->data, old_bytes, new_bytes);
-  CHK(new_data);
-
-  arr->data = new_data;
-  arr->size = new_size;
-  return true;
 }
 
 static void *upb_array_reserve(upb_array *arr, size_t elements,
                                size_t elem_size, upb_arena *arena) {
   if (arr->size - arr->len < elements) {
-    CHK(upb_array_grow(arr, elements, elem_size, arena));
+    CHK(_upb_array_realloc(arr, arr->len + elements, arena));
   }
-  return (char*)arr->data + (arr->len * elem_size);
+  return (char*)_upb_array_ptr(arr) + (arr->len * elem_size);
 }
 
 bool upb_array_add(upb_array *arr, size_t elements, size_t elem_size,
@@ -359,78 +359,80 @@ bool upb_array_add(upb_array *arr, size_t elements, size_t elem_size,
   return true;
 }
 
-static upb_array *upb_getarr(upb_decframe *frame,
-                             const upb_msglayout_field *field) {
+static upb_array *upb_getarr(upb_msg *msg, const upb_msglayout_field *field) {
   UPB_ASSERT(field->label == UPB_LABEL_REPEATED);
-  return *(upb_array**)&frame->msg[field->offset];
+  return *PTR_AT(msg, field->offset, upb_array*);
 }
 
-static upb_array *upb_getorcreatearr(upb_decframe *frame,
-                                     const upb_msglayout_field *field) {
-  upb_array *arr = upb_getarr(frame, field);
+static upb_array *upb_getorcreatearr(upb_msg *msg,
+                                     const upb_msglayout_field *field,
+                                     upb_decstate *d) {
+  upb_array *arr = upb_getarr(msg, field);
 
   if (!arr) {
-    arr = upb_array_new(frame->state->arena);
+    upb_fieldtype_t type = desctype_to_fieldtype[field->descriptortype];
+    arr = _upb_array_new(d->arena, type);
     CHK(arr);
-    *(upb_array**)&frame->msg[field->offset] = arr;
+    *PTR_AT(msg, field->offset, upb_array*) = arr;
   }
 
   return arr;
 }
 
-static upb_msg *upb_getorcreatemsg(upb_decframe *frame,
+static upb_msg *upb_getorcreatemsg(upb_msg *msg,
                                    const upb_msglayout_field *field,
-                                   const upb_msglayout **subm) {
-  upb_msg **submsg = (void*)(frame->msg + field->offset);
-  *subm = frame->layout->submsgs[field->submsg_index];
+                                   const upb_msglayout *layout,
+                                   upb_decstate *d) {
+  upb_msg **submsg = PTR_AT(msg, field->offset, upb_msg*);
 
   UPB_ASSERT(field->label != UPB_LABEL_REPEATED);
 
   if (!*submsg) {
-    *submsg = upb_msg_new(*subm, frame->state->arena);
+    *submsg = _upb_msg_new(layout, d->arena);
     CHK(*submsg);
   }
 
   return *submsg;
 }
 
-static upb_msg *upb_addmsg(upb_decframe *frame,
+static upb_msg *upb_addmsg(upb_msg *msg,
                            const upb_msglayout_field *field,
-                           const upb_msglayout **subm) {
+                           const upb_msglayout *layout,
+                           upb_decstate *d) {
   upb_msg *submsg;
-  upb_array *arr = upb_getorcreatearr(frame, field);
+  upb_array *arr = upb_getorcreatearr(msg, field, d);
 
-  *subm = frame->layout->submsgs[field->submsg_index];
-  submsg = upb_msg_new(*subm, frame->state->arena);
+  UPB_ASSERT(field->label == UPB_LABEL_REPEATED);
+  UPB_ASSERT(field->descriptortype == UPB_DESCRIPTOR_TYPE_MESSAGE ||
+             field->descriptortype == UPB_DESCRIPTOR_TYPE_GROUP);
+
+  submsg = _upb_msg_new(layout, d->arena);
   CHK(submsg);
-  upb_array_add(arr, 1, sizeof(submsg), &submsg, frame->state->arena);
+  upb_array_add(arr, 1, sizeof(submsg), &submsg, d->arena);
 
   return submsg;
 }
 
-static void upb_sethasbit(upb_decframe *frame,
-                          const upb_msglayout_field *field) {
+static void upb_sethasbit(upb_msg *msg, const upb_msglayout_field *field) {
   int32_t hasbit = field->presence;
   UPB_ASSERT(field->presence > 0);
-  frame->msg[hasbit / 8] |= (1 << (hasbit % 8));
+  *PTR_AT(msg, hasbit / 8, char) |= (1 << (hasbit % 8));
 }
 
-static void upb_setoneofcase(upb_decframe *frame,
-                             const upb_msglayout_field *field) {
+static void upb_setoneofcase(upb_msg *msg, const upb_msglayout_field *field) {
   UPB_ASSERT(field->presence < 0);
-  upb_set32(frame->msg, ~field->presence, field->number);
+  upb_set32(msg, ~field->presence, field->number);
 }
 
-static bool upb_decode_addval(upb_decframe *frame,
-                               const upb_msglayout_field *field, void *val,
-                               size_t size) {
-  char *field_mem = frame->msg + field->offset;
+static bool upb_decode_addval(upb_msg *msg, const upb_msglayout_field *field,
+                              void *val, size_t size, upb_decstate *d) {
+  char *field_mem = PTR_AT(msg, field->offset, char);
   upb_array *arr;
 
   if (field->label == UPB_LABEL_REPEATED) {
-    arr = upb_getorcreatearr(frame, field);
+    arr = upb_getorcreatearr(msg, field, d);
     CHK(arr);
-    field_mem = upb_array_reserve(arr, 1, size, frame->state->arena);
+    field_mem = upb_array_reserve(arr, 1, size, d->arena);
     CHK(field_mem);
   }
 
@@ -438,142 +440,147 @@ static bool upb_decode_addval(upb_decframe *frame,
   return true;
 }
 
-static void upb_decode_setpresent(upb_decframe *frame,
+static void upb_decode_setpresent(upb_msg *msg,
                                   const upb_msglayout_field *field) {
   if (field->label == UPB_LABEL_REPEATED) {
-   upb_array *arr = upb_getarr(frame, field);
+   upb_array *arr = upb_getarr(msg, field);
    UPB_ASSERT(arr->len < arr->size);
    arr->len++;
   } else if (field->presence < 0) {
-    upb_setoneofcase(frame, field);
+    upb_setoneofcase(msg, field);
   } else if (field->presence > 0) {
-    upb_sethasbit(frame, field);
+    upb_sethasbit(msg, field);
   }
 }
 
-static bool upb_decode_msgfield(upb_decstate *d, upb_msg *msg,
-                                const upb_msglayout *layout, int limit) {
+static const char *upb_decode_msgfield(const char *ptr,
+                                       const upb_msglayout *layout, int limit,
+                                       upb_msg *msg, upb_decstate *d) {
   const char* saved_limit = d->limit;
-  d->limit = d->ptr + limit;
+  d->limit = ptr + limit;
   CHK(--d->depth >= 0);
-  upb_decode_message(d, msg, layout);
+  ptr = upb_decode_message(ptr, layout, msg, d);
   d->depth++;
   d->limit = saved_limit;
   CHK(d->end_group == 0);
-  return true;
+  return ptr;
 }
 
-static bool upb_decode_groupfield(upb_decstate *d, upb_msg *msg,
-                                  const upb_msglayout *layout,
-                                  int field_number) {
+static const char *upb_decode_groupfield(const char *ptr,
+                                         const upb_msglayout *layout,
+                                         int field_number, upb_msg *msg,
+                                         upb_decstate *d) {
   CHK(--d->depth >= 0);
-  upb_decode_message(d, msg, layout);
+  ptr = upb_decode_message(ptr, layout, msg, d);
   d->depth++;
   CHK(d->end_group == field_number);
   d->end_group = 0;
-  return true;
+  return ptr;
 }
 
-static bool upb_decode_varintfield(upb_decstate *d, upb_decframe *frame,
-                                   const upb_msglayout_field *field) {
+static const char *upb_decode_varintfield(const char *ptr, upb_msg *msg,
+                                          const upb_msglayout_field *field,
+                                          upb_decstate *d) {
   uint64_t val;
-  CHK(upb_decode_varint(&d->ptr, d->limit, &val));
+  CHK(ptr = upb_decode_varint(ptr, d->limit, &val));
 
   switch (field->descriptortype) {
     case UPB_DESCRIPTOR_TYPE_INT64:
     case UPB_DESCRIPTOR_TYPE_UINT64:
-      CHK(upb_decode_addval(frame, field, &val, sizeof(val)));
+      CHK(upb_decode_addval(msg, field, &val, sizeof(val), d));
       break;
     case UPB_DESCRIPTOR_TYPE_INT32:
     case UPB_DESCRIPTOR_TYPE_UINT32:
     case UPB_DESCRIPTOR_TYPE_ENUM: {
       uint32_t val32 = (uint32_t)val;
-      CHK(upb_decode_addval(frame, field, &val32, sizeof(val32)));
+      CHK(upb_decode_addval(msg, field, &val32, sizeof(val32), d));
       break;
     }
     case UPB_DESCRIPTOR_TYPE_BOOL: {
       bool valbool = val != 0;
-      CHK(upb_decode_addval(frame, field, &valbool, sizeof(valbool)));
+      CHK(upb_decode_addval(msg, field, &valbool, sizeof(valbool), d));
       break;
     }
     case UPB_DESCRIPTOR_TYPE_SINT32: {
       int32_t decoded = upb_zzdecode_32((uint32_t)val);
-      CHK(upb_decode_addval(frame, field, &decoded, sizeof(decoded)));
+      CHK(upb_decode_addval(msg, field, &decoded, sizeof(decoded), d));
       break;
     }
     case UPB_DESCRIPTOR_TYPE_SINT64: {
       int64_t decoded = upb_zzdecode_64(val);
-      CHK(upb_decode_addval(frame, field, &decoded, sizeof(decoded)));
+      CHK(upb_decode_addval(msg, field, &decoded, sizeof(decoded), d));
       break;
     }
     default:
-      return upb_append_unknown(d, frame);
+      return upb_append_unknown(ptr, msg, d);
   }
 
-  upb_decode_setpresent(frame, field);
-  return true;
+  upb_decode_setpresent(msg, field);
+  return ptr;
 }
 
-static bool upb_decode_64bitfield(upb_decstate *d, upb_decframe *frame,
-                                  const upb_msglayout_field *field) {
+static const char *upb_decode_64bitfield(const char *ptr,
+                                         const upb_msglayout_field *field,
+                                         upb_msg *msg, upb_decstate *d) {
   uint64_t val;
-  CHK(upb_decode_64bit(&d->ptr, d->limit, &val));
+  CHK(ptr = upb_decode_64bit(ptr, d->limit, &val));
 
   switch (field->descriptortype) {
     case UPB_DESCRIPTOR_TYPE_DOUBLE:
     case UPB_DESCRIPTOR_TYPE_FIXED64:
     case UPB_DESCRIPTOR_TYPE_SFIXED64:
-      CHK(upb_decode_addval(frame, field, &val, sizeof(val)));
+      CHK(upb_decode_addval(msg, field, &val, sizeof(val), d));
       break;
     default:
-      return upb_append_unknown(d, frame);
+      return upb_append_unknown(ptr, msg, d);
   }
 
-  upb_decode_setpresent(frame, field);
-  return true;
+  upb_decode_setpresent(msg, field);
+  return ptr;
 }
 
-static bool upb_decode_32bitfield(upb_decstate *d, upb_decframe *frame,
-                                  const upb_msglayout_field *field) {
+static const char *upb_decode_32bitfield(const char *ptr,
+                                         const upb_msglayout_field *field,
+                                         upb_msg *msg, upb_decstate *d) {
   uint32_t val;
-  CHK(upb_decode_32bit(&d->ptr, d->limit, &val));
+  CHK(ptr = upb_decode_32bit(ptr, d->limit, &val));
 
   switch (field->descriptortype) {
     case UPB_DESCRIPTOR_TYPE_FLOAT:
     case UPB_DESCRIPTOR_TYPE_FIXED32:
     case UPB_DESCRIPTOR_TYPE_SFIXED32:
-      CHK(upb_decode_addval(frame, field, &val, sizeof(val)));
+      CHK(upb_decode_addval(msg, field, &val, sizeof(val), d));
       break;
     default:
-      return upb_append_unknown(d, frame);
+      return upb_append_unknown(ptr, msg, d);
   }
 
-  upb_decode_setpresent(frame, field);
-  return true;
+  upb_decode_setpresent(msg, field);
+  return ptr;
 }
 
-static bool upb_decode_fixedpacked(upb_decstate *d, upb_array *arr,
-                                   uint32_t len, int elem_size) {
+static const char *upb_decode_fixedpacked(const char *ptr, upb_decstate *d,
+                                          upb_array *arr, uint32_t len,
+                                          int elem_size) {
   size_t elements = len / elem_size;
 
   CHK((size_t)(elements * elem_size) == len);
-  CHK(upb_array_add(arr, elements, elem_size, d->ptr, d->arena));
-  d->ptr += len;
-
-  return true;
+  CHK(upb_array_add(arr, elements, elem_size, ptr, d->arena));
+  return ptr + len;
 }
 
-static upb_strview upb_decode_strfield(upb_decstate *d, uint32_t len) {
-  upb_strview ret;
-  ret.data = d->ptr;
-  ret.size = len;
-  d->ptr += len;
-  return ret;
+static const char *upb_decode_strfield(const char *ptr, upb_decstate *d,
+                                       uint32_t len, upb_strview *str) {
+  str->data = ptr;
+  str->size = len;
+  return ptr + len;
 }
 
-static bool upb_decode_toarray(upb_decstate *d, upb_decframe *frame,
-                               const upb_msglayout_field *field, int len) {
-  upb_array *arr = upb_getorcreatearr(frame, field);
+static const char *upb_decode_toarray(const char *ptr,
+                                      const upb_msglayout *layout,
+                                      const upb_msglayout_field *field, int len,
+                                      upb_msg *msg, upb_decstate *d) {
+  upb_array *arr = upb_getorcreatearr(msg, field, d);
   CHK(arr);
 
 #define VARINT_CASE(ctype, decode) \
@@ -581,33 +588,33 @@ static bool upb_decode_toarray(upb_decstate *d, upb_decframe *frame,
 
 #define VARINT_CASE_EX(ctype, decode, dtype)                           \
   {                                                                    \
-    const char *ptr = d->ptr;                                          \
     const char *limit = ptr + len;                                     \
     while (ptr < limit) {                                              \
       uint64_t val;                                                    \
       ctype decoded;                                                   \
-      CHK(upb_decode_varint(&ptr, limit, &val));                       \
+      CHK(ptr = upb_decode_varint(ptr, limit, &val));                  \
       decoded = (decode)((dtype)val);                                  \
       CHK(upb_array_add(arr, 1, sizeof(decoded), &decoded, d->arena)); \
     }                                                                  \
-    d->ptr = ptr;                                                      \
-    return true;                                                       \
+    return ptr;                                                        \
   }
 
   switch (field->descriptortype) {
     case UPB_DESCRIPTOR_TYPE_STRING:
     case UPB_DESCRIPTOR_TYPE_BYTES: {
-      upb_strview str = upb_decode_strfield(d, len);
-      return upb_array_add(arr, 1, sizeof(str), &str, d->arena);
+      upb_strview str;
+      ptr = upb_decode_strfield(ptr, d, len, &str);
+      CHK(upb_array_add(arr, 1, sizeof(str), &str, d->arena));
+      return ptr;
     }
     case UPB_DESCRIPTOR_TYPE_FLOAT:
     case UPB_DESCRIPTOR_TYPE_FIXED32:
     case UPB_DESCRIPTOR_TYPE_SFIXED32:
-      return upb_decode_fixedpacked(d, arr, len, sizeof(int32_t));
+      return upb_decode_fixedpacked(ptr, d, arr, len, sizeof(int32_t));
     case UPB_DESCRIPTOR_TYPE_DOUBLE:
     case UPB_DESCRIPTOR_TYPE_FIXED64:
     case UPB_DESCRIPTOR_TYPE_SFIXED64:
-      return upb_decode_fixedpacked(d, arr, len, sizeof(int64_t));
+      return upb_decode_fixedpacked(ptr, d, arr, len, sizeof(int64_t));
     case UPB_DESCRIPTOR_TYPE_INT32:
     case UPB_DESCRIPTOR_TYPE_UINT32:
     case UPB_DESCRIPTOR_TYPE_ENUM:
@@ -622,48 +629,83 @@ static bool upb_decode_toarray(upb_decstate *d, upb_decframe *frame,
     case UPB_DESCRIPTOR_TYPE_SINT64:
       VARINT_CASE_EX(int64_t, upb_zzdecode_64, uint64_t);
     case UPB_DESCRIPTOR_TYPE_MESSAGE: {
-      const upb_msglayout *subm;
-      upb_msg *submsg = upb_addmsg(frame, field, &subm);
+      const upb_msglayout *subl = layout->submsgs[field->submsg_index];
+      upb_msg *submsg = upb_addmsg(msg, field, subl, d);
       CHK(submsg);
-      return upb_decode_msgfield(d, submsg, subm, len);
+      return upb_decode_msgfield(ptr, subl, len, submsg, d);
     }
     case UPB_DESCRIPTOR_TYPE_GROUP:
-      return upb_append_unknown(d, frame);
+      return upb_append_unknown(ptr, msg, d);
   }
 #undef VARINT_CASE
   UPB_UNREACHABLE();
 }
 
-static bool upb_decode_delimitedfield(upb_decstate *d, upb_decframe *frame,
-                                      const upb_msglayout_field *field) {
+static const char *upb_decode_mapfield(const char *ptr,
+                                       const upb_msglayout *layout,
+                                       const upb_msglayout_field *field,
+                                       int len, upb_msg *msg, upb_decstate *d) {
+  upb_map *map = *PTR_AT(msg, field->offset, upb_map*);
+  const upb_msglayout *entry = layout->submsgs[field->submsg_index];
+  upb_map_entry ent;
+
+  if (!map) {
+    /* Lazily create map. */
+    const upb_msglayout_field *key_field = &entry->fields[0];
+    const upb_msglayout_field *val_field = &entry->fields[1];
+    char key_size = desctype_to_mapsize[key_field->descriptortype];
+    char val_size = desctype_to_mapsize[val_field->descriptortype];
+    UPB_ASSERT(key_field->number == 1);
+    UPB_ASSERT(val_field->number == 2);
+    UPB_ASSERT(key_field->offset == 0);
+    UPB_ASSERT(val_field->offset == sizeof(upb_strview));
+    map = _upb_map_new(d->arena, key_size, val_size);
+    *PTR_AT(msg, field->offset, upb_map*) = map;
+  }
+
+  /* Parse map entry. */
+  memset(&ent, 0, sizeof(ent));
+  CHK(ptr = upb_decode_msgfield(ptr, entry, len, &ent.k, d));
+
+  /* Insert into map. */
+  _upb_map_set(map, &ent.k, map->key_size, &ent.v, map->val_size, d->arena);
+  return ptr;
+}
+
+static const char *upb_decode_delimitedfield(const char *ptr,
+                                             const upb_msglayout *layout,
+                                             const upb_msglayout_field *field,
+                                             upb_msg *msg, upb_decstate *d) {
   int len;
 
-  CHK(upb_decode_string(&d->ptr, d->limit, &len));
+  CHK(ptr = upb_decode_string(ptr, d->limit, &len));
 
   if (field->label == UPB_LABEL_REPEATED) {
-    return upb_decode_toarray(d, frame, field, len);
+    return upb_decode_toarray(ptr, layout, field, len, msg, d);
+  } else if (field->label == UPB_LABEL_MAP) {
+    return upb_decode_mapfield(ptr, layout, field, len, msg, d);
   } else {
     switch (field->descriptortype) {
       case UPB_DESCRIPTOR_TYPE_STRING:
       case UPB_DESCRIPTOR_TYPE_BYTES: {
-        upb_strview str = upb_decode_strfield(d, len);
-        CHK(upb_decode_addval(frame, field, &str, sizeof(str)));
+        upb_strview str;
+        ptr = upb_decode_strfield(ptr, d, len, &str);
+        CHK(upb_decode_addval(msg, field, &str, sizeof(str), d));
         break;
       }
       case UPB_DESCRIPTOR_TYPE_MESSAGE: {
-        const upb_msglayout *subm;
-        upb_msg *submsg = upb_getorcreatemsg(frame, field, &subm);
+        const upb_msglayout *subl = layout->submsgs[field->submsg_index];
+        upb_msg *submsg = upb_getorcreatemsg(msg, field, subl, d);
         CHK(submsg);
-        CHK(upb_decode_msgfield(d, submsg, subm, len));
+        CHK(ptr = upb_decode_msgfield(ptr, subl, len, submsg, d));
         break;
       }
       default:
         /* TODO(haberman): should we accept the last element of a packed? */
-        d->ptr += len;
-        return upb_append_unknown(d, frame);
+        return upb_append_unknown(ptr + len, msg, d);
     }
-    upb_decode_setpresent(frame, field);
-    return true;
+    upb_decode_setpresent(msg, field);
+    return ptr;
   }
 }
 
@@ -680,79 +722,81 @@ static const upb_msglayout_field *upb_find_field(const upb_msglayout *l,
   return NULL;  /* Unknown field. */
 }
 
-static bool upb_decode_field(upb_decstate *d, upb_decframe *frame) {
+static const char *upb_decode_field(const char *ptr,
+                                    const upb_msglayout *layout, upb_msg *msg,
+                                    upb_decstate *d) {
   uint32_t tag;
   const upb_msglayout_field *field;
   int field_number;
 
-  d->field_start = d->ptr;
-  CHK(upb_decode_varint32(&d->ptr, d->limit, &tag));
+  d->field_start = ptr;
+  CHK(ptr = upb_decode_varint32(ptr, d->limit, &tag));
   field_number = tag >> 3;
-  field = upb_find_field(frame->layout, field_number);
+  field = upb_find_field(layout, field_number);
 
   if (field) {
     switch (tag & 7) {
       case UPB_WIRE_TYPE_VARINT:
-        return upb_decode_varintfield(d, frame, field);
+        return upb_decode_varintfield(ptr, msg, field, d);
       case UPB_WIRE_TYPE_32BIT:
-        return upb_decode_32bitfield(d, frame, field);
+        return upb_decode_32bitfield(ptr, field, msg, d);
       case UPB_WIRE_TYPE_64BIT:
-        return upb_decode_64bitfield(d, frame, field);
+        return upb_decode_64bitfield(ptr, field, msg, d);
       case UPB_WIRE_TYPE_DELIMITED:
-        return upb_decode_delimitedfield(d, frame, field);
+        return upb_decode_delimitedfield(ptr, layout, field, msg, d);
       case UPB_WIRE_TYPE_START_GROUP: {
-        const upb_msglayout *layout;
+        const upb_msglayout *subl = layout->submsgs[field->submsg_index];
         upb_msg *group;
 
         if (field->label == UPB_LABEL_REPEATED) {
-          group = upb_addmsg(frame, field, &layout);
+          group = upb_addmsg(msg, field, subl, d);
         } else {
-          group = upb_getorcreatemsg(frame, field, &layout);
+          group = upb_getorcreatemsg(msg, field, subl, d);
         }
 
-        return upb_decode_groupfield(d, group, layout, field_number);
+        return upb_decode_groupfield(ptr, subl, field_number, group, d);
       }
       case UPB_WIRE_TYPE_END_GROUP:
         d->end_group = field_number;
-        return true;
+        return ptr;
       default:
         CHK(false);
     }
   } else {
     CHK(field_number != 0);
-    CHK(upb_skip_unknownfielddata(d, tag, -1));
-    CHK(upb_append_unknown(d, frame));
-    return true;
+    CHK(ptr = upb_skip_unknownfielddata(ptr, d, tag));
+    CHK(ptr = upb_append_unknown(ptr, msg, d));
+    return ptr;
   }
+  UPB_UNREACHABLE();
 }
 
-static bool upb_decode_message(upb_decstate *d, char *msg, const upb_msglayout *l) {
-  upb_decframe frame;
-  frame.msg = msg;
-  frame.layout = l;
-  frame.state = d;
-
-  while (d->ptr < d->limit) {
-    CHK(upb_decode_field(d, &frame));
+static const char *upb_decode_message(const char *ptr, const upb_msglayout *l,
+                                      upb_msg *msg, upb_decstate *d) {
+  while (ptr < d->limit) {
+    CHK(ptr = upb_decode_field(ptr, l, msg, d));
   }
 
-  return true;
+  return ptr;
 }
 
 bool upb_decode(const char *buf, size_t size, void *msg, const upb_msglayout *l,
                 upb_arena *arena) {
   upb_decstate state;
-  state.ptr = buf;
   state.limit = buf + size;
   state.arena = arena;
   state.depth = 64;
   state.end_group = 0;
 
-  CHK(upb_decode_message(&state, msg, l));
+  /* Early exit required for buf==NULL case. */
+  if (size == 0) return true;
+
+  CHK(upb_decode_message(buf, l, msg, &state));
   return state.end_group == 0;
 }
 
 #undef CHK
+#undef PTR_AT
 /* We encode backwards, to avoid pre-computing lengths (one-pass encode). */
 
 
@@ -821,6 +865,7 @@ static bool upb_encode_reserve(upb_encstate *e, size_t bytes) {
 
 /* Writes the given bytes to the buffer, handling reserve/advance. */
 static bool upb_put_bytes(upb_encstate *e, const void *data, size_t len) {
+  if (len == 0) return true;
   CHK(upb_encode_reserve(e, len));
   memcpy(e->ptr, data, len);
   return true;
@@ -881,114 +926,18 @@ static bool upb_put_tag(upb_encstate *e, int field_number, int wire_type) {
 static bool upb_put_fixedarray(upb_encstate *e, const upb_array *arr,
                                size_t size) {
   size_t bytes = arr->len * size;
-  return upb_put_bytes(e, arr->data, bytes) && upb_put_varint(e, bytes);
+  const void* data = _upb_array_constptr(arr);
+  return upb_put_bytes(e, data, bytes) && upb_put_varint(e, bytes);
 }
 
 bool upb_encode_message(upb_encstate *e, const char *msg,
                         const upb_msglayout *m, size_t *size);
 
-static bool upb_encode_array(upb_encstate *e, const char *field_mem,
-                             const upb_msglayout *m,
-                             const upb_msglayout_field *f) {
-  const upb_array *arr = *(const upb_array**)field_mem;
-
-  if (arr == NULL || arr->len == 0) {
-    return true;
-  }
-
-#define VARINT_CASE(ctype, encode) { \
-  ctype *start = arr->data; \
-  ctype *ptr = start + arr->len; \
-  size_t pre_len = e->limit - e->ptr; \
-  do { \
-    ptr--; \
-    CHK(upb_put_varint(e, encode)); \
-  } while (ptr != start); \
-  CHK(upb_put_varint(e, e->limit - e->ptr - pre_len)); \
-} \
-break; \
-do { ; } while(0)
-
-  switch (f->descriptortype) {
-    case UPB_DESCRIPTOR_TYPE_DOUBLE:
-      CHK(upb_put_fixedarray(e, arr, sizeof(double)));
-      break;
-    case UPB_DESCRIPTOR_TYPE_FLOAT:
-      CHK(upb_put_fixedarray(e, arr, sizeof(float)));
-      break;
-    case UPB_DESCRIPTOR_TYPE_SFIXED64:
-    case UPB_DESCRIPTOR_TYPE_FIXED64:
-      CHK(upb_put_fixedarray(e, arr, sizeof(uint64_t)));
-      break;
-    case UPB_DESCRIPTOR_TYPE_FIXED32:
-    case UPB_DESCRIPTOR_TYPE_SFIXED32:
-      CHK(upb_put_fixedarray(e, arr, sizeof(uint32_t)));
-      break;
-    case UPB_DESCRIPTOR_TYPE_INT64:
-    case UPB_DESCRIPTOR_TYPE_UINT64:
-      VARINT_CASE(uint64_t, *ptr);
-    case UPB_DESCRIPTOR_TYPE_UINT32:
-      VARINT_CASE(uint32_t, *ptr);
-    case UPB_DESCRIPTOR_TYPE_INT32:
-    case UPB_DESCRIPTOR_TYPE_ENUM:
-      VARINT_CASE(int32_t, (int64_t)*ptr);
-    case UPB_DESCRIPTOR_TYPE_BOOL:
-      VARINT_CASE(bool, *ptr);
-    case UPB_DESCRIPTOR_TYPE_SINT32:
-      VARINT_CASE(int32_t, upb_zzencode_32(*ptr));
-    case UPB_DESCRIPTOR_TYPE_SINT64:
-      VARINT_CASE(int64_t, upb_zzencode_64(*ptr));
-    case UPB_DESCRIPTOR_TYPE_STRING:
-    case UPB_DESCRIPTOR_TYPE_BYTES: {
-      upb_strview *start = arr->data;
-      upb_strview *ptr = start + arr->len;
-      do {
-        ptr--;
-        CHK(upb_put_bytes(e, ptr->data, ptr->size) &&
-            upb_put_varint(e, ptr->size) &&
-            upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
-      } while (ptr != start);
-      return true;
-    }
-    case UPB_DESCRIPTOR_TYPE_GROUP: {
-      void **start = arr->data;
-      void **ptr = start + arr->len;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
-      do {
-        size_t size;
-        ptr--;
-        CHK(upb_put_tag(e, f->number, UPB_WIRE_TYPE_END_GROUP) &&
-            upb_encode_message(e, *ptr, subm, &size) &&
-            upb_put_tag(e, f->number, UPB_WIRE_TYPE_START_GROUP));
-      } while (ptr != start);
-      return true;
-    }
-    case UPB_DESCRIPTOR_TYPE_MESSAGE: {
-      void **start = arr->data;
-      void **ptr = start + arr->len;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
-      do {
-        size_t size;
-        ptr--;
-        CHK(upb_encode_message(e, *ptr, subm, &size) &&
-            upb_put_varint(e, size) &&
-            upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
-      } while (ptr != start);
-      return true;
-    }
-  }
-#undef VARINT_CASE
-
-  /* We encode all primitive arrays as packed, regardless of what was specified
-   * in the .proto file.  Could special case 1-sized arrays. */
-  CHK(upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
-  return true;
-}
-
-static bool upb_encode_scalarfield(upb_encstate *e, const char *field_mem,
+static bool upb_encode_scalarfield(upb_encstate *e, const void *_field_mem,
                                    const upb_msglayout *m,
                                    const upb_msglayout_field *f,
                                    bool skip_zero_value) {
+  const char *field_mem = _field_mem;
 #define CASE(ctype, type, wire_type, encodeval) do { \
   ctype val = *(ctype*)field_mem; \
   if (skip_zero_value && val == 0) { \
@@ -1060,6 +1009,138 @@ static bool upb_encode_scalarfield(upb_encstate *e, const char *field_mem,
   UPB_UNREACHABLE();
 }
 
+static bool upb_encode_array(upb_encstate *e, const char *field_mem,
+                             const upb_msglayout *m,
+                             const upb_msglayout_field *f) {
+  const upb_array *arr = *(const upb_array**)field_mem;
+
+  if (arr == NULL || arr->len == 0) {
+    return true;
+  }
+
+#define VARINT_CASE(ctype, encode) { \
+  const ctype *start = _upb_array_constptr(arr); \
+  const ctype *ptr = start + arr->len; \
+  size_t pre_len = e->limit - e->ptr; \
+  do { \
+    ptr--; \
+    CHK(upb_put_varint(e, encode)); \
+  } while (ptr != start); \
+  CHK(upb_put_varint(e, e->limit - e->ptr - pre_len)); \
+} \
+break; \
+do { ; } while(0)
+
+  switch (f->descriptortype) {
+    case UPB_DESCRIPTOR_TYPE_DOUBLE:
+      CHK(upb_put_fixedarray(e, arr, sizeof(double)));
+      break;
+    case UPB_DESCRIPTOR_TYPE_FLOAT:
+      CHK(upb_put_fixedarray(e, arr, sizeof(float)));
+      break;
+    case UPB_DESCRIPTOR_TYPE_SFIXED64:
+    case UPB_DESCRIPTOR_TYPE_FIXED64:
+      CHK(upb_put_fixedarray(e, arr, sizeof(uint64_t)));
+      break;
+    case UPB_DESCRIPTOR_TYPE_FIXED32:
+    case UPB_DESCRIPTOR_TYPE_SFIXED32:
+      CHK(upb_put_fixedarray(e, arr, sizeof(uint32_t)));
+      break;
+    case UPB_DESCRIPTOR_TYPE_INT64:
+    case UPB_DESCRIPTOR_TYPE_UINT64:
+      VARINT_CASE(uint64_t, *ptr);
+    case UPB_DESCRIPTOR_TYPE_UINT32:
+      VARINT_CASE(uint32_t, *ptr);
+    case UPB_DESCRIPTOR_TYPE_INT32:
+    case UPB_DESCRIPTOR_TYPE_ENUM:
+      VARINT_CASE(int32_t, (int64_t)*ptr);
+    case UPB_DESCRIPTOR_TYPE_BOOL:
+      VARINT_CASE(bool, *ptr);
+    case UPB_DESCRIPTOR_TYPE_SINT32:
+      VARINT_CASE(int32_t, upb_zzencode_32(*ptr));
+    case UPB_DESCRIPTOR_TYPE_SINT64:
+      VARINT_CASE(int64_t, upb_zzencode_64(*ptr));
+    case UPB_DESCRIPTOR_TYPE_STRING:
+    case UPB_DESCRIPTOR_TYPE_BYTES: {
+      const upb_strview *start = _upb_array_constptr(arr);
+      const upb_strview *ptr = start + arr->len;
+      do {
+        ptr--;
+        CHK(upb_put_bytes(e, ptr->data, ptr->size) &&
+            upb_put_varint(e, ptr->size) &&
+            upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
+      } while (ptr != start);
+      return true;
+    }
+    case UPB_DESCRIPTOR_TYPE_GROUP: {
+      const void *const*start = _upb_array_constptr(arr);
+      const void *const*ptr = start + arr->len;
+      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      do {
+        size_t size;
+        ptr--;
+        CHK(upb_put_tag(e, f->number, UPB_WIRE_TYPE_END_GROUP) &&
+            upb_encode_message(e, *ptr, subm, &size) &&
+            upb_put_tag(e, f->number, UPB_WIRE_TYPE_START_GROUP));
+      } while (ptr != start);
+      return true;
+    }
+    case UPB_DESCRIPTOR_TYPE_MESSAGE: {
+      const void *const*start = _upb_array_constptr(arr);
+      const void *const*ptr = start + arr->len;
+      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      do {
+        size_t size;
+        ptr--;
+        CHK(upb_encode_message(e, *ptr, subm, &size) &&
+            upb_put_varint(e, size) &&
+            upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
+      } while (ptr != start);
+      return true;
+    }
+  }
+#undef VARINT_CASE
+
+  /* We encode all primitive arrays as packed, regardless of what was specified
+   * in the .proto file.  Could special case 1-sized arrays. */
+  CHK(upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
+  return true;
+}
+
+static bool upb_encode_map(upb_encstate *e, const char *field_mem,
+                           const upb_msglayout *m,
+                           const upb_msglayout_field *f) {
+  const upb_map *map = *(const upb_map**)field_mem;
+  const upb_msglayout *entry = m->submsgs[f->submsg_index];
+  const upb_msglayout_field *key_field = &entry->fields[0];
+  const upb_msglayout_field *val_field = &entry->fields[1];
+  upb_strtable_iter i;
+  if (map == NULL) {
+    return true;
+  }
+
+  upb_strtable_begin(&i, &map->table);
+  for(; !upb_strtable_done(&i); upb_strtable_next(&i)) {
+    size_t pre_len = e->limit - e->ptr;
+    size_t size;
+    upb_strview key = upb_strtable_iter_key(&i);
+    const upb_value val = upb_strtable_iter_value(&i);
+    const void *keyp =
+        map->key_size == UPB_MAPTYPE_STRING ? (void *)&key : key.data;
+    const void *valp =
+        map->val_size == UPB_MAPTYPE_STRING ? upb_value_getptr(val) : &val;
+
+    CHK(upb_encode_scalarfield(e, valp, entry, val_field, false));
+    CHK(upb_encode_scalarfield(e, keyp, entry, key_field, false));
+    size = (e->limit - e->ptr) - pre_len;
+    CHK(upb_put_varint(e, size));
+    CHK(upb_put_tag(e, f->number, UPB_WIRE_TYPE_DELIMITED));
+  }
+
+  return true;
+}
+
+
 bool upb_encode_message(upb_encstate *e, const char *msg,
                         const upb_msglayout *m, size_t *size) {
   int i;
@@ -1067,11 +1148,19 @@ bool upb_encode_message(upb_encstate *e, const char *msg,
   const char *unknown;
   size_t unknown_size;
 
+  unknown = upb_msg_getunknown(msg, &unknown_size);
+
+  if (unknown) {
+    upb_put_bytes(e, unknown, unknown_size);
+  }
+
   for (i = m->field_count - 1; i >= 0; i--) {
     const upb_msglayout_field *f = &m->fields[i];
 
     if (f->label == UPB_LABEL_REPEATED) {
       CHK(upb_encode_array(e, msg + f->offset, m, f));
+    } else if (f->label == UPB_LABEL_MAP) {
+      CHK(upb_encode_map(e, msg + f->offset, m, f));
     } else {
       bool skip_empty = false;
       if (f->presence == 0) {
@@ -1090,12 +1179,6 @@ bool upb_encode_message(upb_encstate *e, const char *msg,
       }
       CHK(upb_encode_scalarfield(e, msg + f->offset, m, f, skip_empty));
     }
-  }
-
-  unknown = upb_msg_getunknown(msg, &unknown_size);
-
-  if (unknown) {
-    upb_put_bytes(e, unknown, unknown_size);
   }
 
   *size = (e->limit - e->ptr) - pre_len;
@@ -1133,22 +1216,27 @@ char *upb_encode(const void *msg, const upb_msglayout *m, upb_arena *arena,
 
 #define VOIDPTR_AT(msg, ofs) (void*)((char*)msg + (int)ofs)
 
-/* Internal members of a upb_msg.  We can change this without breaking binary
- * compatibility.  We put these before the user's data.  The user's upb_msg*
- * points after the upb_msg_internal. */
+/** upb_msg *******************************************************************/
 
-/* Used when a message is not extendable. */
-typedef struct {
-  char *unknown;
-  size_t unknown_len;
-  size_t unknown_size;
-} upb_msg_internal;
+static const char _upb_fieldtype_to_sizelg2[12] = {
+  0,
+  0,  /* UPB_TYPE_BOOL */
+  2,  /* UPB_TYPE_FLOAT */
+  2,  /* UPB_TYPE_INT32 */
+  2,  /* UPB_TYPE_UINT32 */
+  2,  /* UPB_TYPE_ENUM */
+  UPB_SIZE(2, 3),  /* UPB_TYPE_MESSAGE */
+  3,  /* UPB_TYPE_DOUBLE */
+  3,  /* UPB_TYPE_INT64 */
+  3,  /* UPB_TYPE_UINT64 */
+  UPB_SIZE(3, 4),  /* UPB_TYPE_STRING */
+  UPB_SIZE(3, 4),  /* UPB_TYPE_BYTES */
+};
 
-/* Used when a message is extendable. */
-typedef struct {
-  upb_inttable *extdict;
-  upb_msg_internal base;
-} upb_msg_internal_withext;
+static uintptr_t tag_arrptr(void* ptr, int elem_size_lg2) {
+  UPB_ASSERT(elem_size_lg2 <= 4);
+  return (uintptr_t)ptr | elem_size_lg2;
+}
 
 static int upb_msg_internalsize(const upb_msglayout *l) {
   return sizeof(upb_msg_internal) - l->extendable * sizeof(void *);
@@ -1172,7 +1260,7 @@ static upb_msg_internal_withext *upb_msg_getinternalwithext(
   return VOIDPTR_AT(msg, -sizeof(upb_msg_internal_withext));
 }
 
-upb_msg *upb_msg_new(const upb_msglayout *l, upb_arena *a) {
+upb_msg *_upb_msg_new(const upb_msglayout *l, upb_arena *a) {
   upb_alloc *alloc = upb_arena_alloc(a);
   void *mem = upb_malloc(alloc, upb_msg_sizeof(l));
   upb_msg_internal *in;
@@ -1200,20 +1288,6 @@ upb_msg *upb_msg_new(const upb_msglayout *l, upb_arena *a) {
   return msg;
 }
 
-upb_array *upb_array_new(upb_arena *a) {
-  upb_array *ret = upb_arena_malloc(a, sizeof(upb_array));
-
-  if (!ret) {
-    return NULL;
-  }
-
-  ret->data = NULL;
-  ret->len = 0;
-  ret->size = 0;
-
-  return ret;
-}
-
 void upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
                         upb_arena *arena) {
   upb_msg_internal *in = upb_msg_getinternal(msg);
@@ -1229,37 +1303,106 @@ void upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
 }
 
 const char *upb_msg_getunknown(const upb_msg *msg, size_t *len) {
-  const upb_msg_internal* in = upb_msg_getinternal_const(msg);
+  const upb_msg_internal *in = upb_msg_getinternal_const(msg);
   *len = in->unknown_len;
   return in->unknown;
 }
 
+/** upb_array *****************************************************************/
+
+upb_array *_upb_array_new(upb_arena *a, upb_fieldtype_t type) {
+  upb_array *arr = upb_arena_malloc(a, sizeof(upb_array));
+
+  if (!arr) {
+    return NULL;
+  }
+
+  arr->data = tag_arrptr(NULL, _upb_fieldtype_to_sizelg2[type]);
+  arr->len = 0;
+  arr->size = 0;
+
+  return arr;
+}
+
+bool _upb_array_realloc(upb_array *arr, size_t min_size, upb_arena *arena) {
+  size_t new_size = UPB_MAX(arr->size, 4);
+  int elem_size_lg2 = arr->data & 7;
+  size_t old_bytes = arr->size << elem_size_lg2;
+  size_t new_bytes;
+  void* ptr = _upb_array_ptr(arr);
+
+  /* Log2 ceiling of size. */
+  while (new_size < min_size) new_size *= 2;
+
+  new_bytes = new_size << elem_size_lg2;
+  ptr = upb_arena_realloc(arena, ptr, old_bytes, new_bytes);
+
+  if (!ptr) {
+    return false;
+  }
+
+  arr->data = tag_arrptr(ptr, elem_size_lg2);
+  arr->size = new_size;
+  return true;
+}
+
+static upb_array *getorcreate_array(upb_array **arr_ptr, upb_fieldtype_t type,
+                                    upb_arena *arena) {
+  upb_array *arr = *arr_ptr;
+  if (!arr) {
+    arr = _upb_array_new(arena, type);
+    if (!arr) return NULL;
+    *arr_ptr = arr;
+  }
+  return arr;
+}
+
+static bool resize_array(upb_array *arr, size_t size, upb_arena *arena) {
+  if (size > arr->size && !_upb_array_realloc(arr, size, arena)) {
+    return false;
+  }
+
+  arr->len = size;
+  return true;
+}
+
+void *_upb_array_resize_fallback(upb_array **arr_ptr, size_t size,
+                                 upb_fieldtype_t type, upb_arena *arena) {
+  upb_array *arr = getorcreate_array(arr_ptr, type, arena);
+  return arr && resize_array(arr, size, arena) ? _upb_array_ptr(arr) : NULL;
+}
+
+bool _upb_array_append_fallback(upb_array **arr_ptr, const void *value,
+                                upb_fieldtype_t type, upb_arena *arena) {
+  upb_array *arr = getorcreate_array(arr_ptr, type, arena);
+  size_t elem = arr->len;
+  int lg2 = _upb_fieldtype_to_sizelg2[type];
+  char *data;
+
+  if (!arr || !resize_array(arr, elem + 1, arena)) return false;
+
+  data = _upb_array_ptr(arr);
+  memcpy(data + (elem << lg2), value, 1 << lg2);
+  return true;
+}
+
+/** upb_map *******************************************************************/
+
+upb_map *_upb_map_new(upb_arena *a, size_t key_size, size_t value_size) {
+  upb_map *map = upb_arena_malloc(a, sizeof(upb_map));
+
+  if (!map) {
+    return NULL;
+  }
+
+  upb_strtable_init2(&map->table, UPB_CTYPE_INT32, upb_arena_alloc(a));
+  map->key_size = key_size;
+  map->val_size = value_size;
+
+  return map;
+}
+
 #undef VOIDPTR_AT
-
-
-#ifdef UPB_MSVC_VSNPRINTF
-/* Visual C++ earlier than 2015 doesn't have standard C99 snprintf and
- * vsnprintf. To support them, missing functions are manually implemented
- * using the existing secure functions. */
-int msvc_vsnprintf(char* s, size_t n, const char* format, va_list arg) {
-  if (!s) {
-    return _vscprintf(format, arg);
-  }
-  int ret = _vsnprintf_s(s, n, _TRUNCATE, format, arg);
-  if (ret < 0) {
-	ret = _vscprintf(format, arg);
-  }
-  return ret;
-}
-
-int msvc_snprintf(char* s, size_t n, const char* format, ...) {
-  va_list arg;
-  va_start(arg, format);
-  int ret = msvc_vsnprintf(s, n, format, arg);
-  va_end(arg);
-  return ret;
-}
-#endif
 /*
 ** upb_table Implementation
 **
@@ -1275,12 +1418,6 @@ int msvc_snprintf(char* s, size_t n, const char* format, ...) {
 /* From Chromium. */
 #define ARRAY_SIZE(x) \
     ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
-
-static void upb_check_alloc(upb_table *t, upb_alloc *a) {
-  UPB_UNUSED(t);
-  UPB_UNUSED(a);
-  UPB_ASSERT_DEBUGVAR(t->alloc == a);
-}
 
 static const double MAX_LOAD = 0.85;
 
@@ -1360,17 +1497,12 @@ static bool isfull(upb_table *t) {
   }
 }
 
-static bool init(upb_table *t, upb_ctype_t ctype, uint8_t size_lg2,
-                 upb_alloc *a) {
+static bool init(upb_table *t, uint8_t size_lg2, upb_alloc *a) {
   size_t bytes;
 
   t->count = 0;
-  t->ctype = ctype;
   t->size_lg2 = size_lg2;
   t->mask = upb_table_size(t) ? upb_table_size(t) - 1 : 0;
-#ifndef NDEBUG
-  t->alloc = a;
-#endif
   bytes = upb_table_size(t) * sizeof(upb_tabent);
   if (bytes > 0) {
     t->entries = upb_malloc(a, bytes);
@@ -1383,7 +1515,6 @@ static bool init(upb_table *t, upb_ctype_t ctype, uint8_t size_lg2,
 }
 
 static void uninit(upb_table *t, upb_alloc *a) {
-  upb_check_alloc(t, a);
   upb_free(a, mutable_entries(t));
 }
 
@@ -1419,7 +1550,7 @@ static bool lookup(const upb_table *t, lookupkey_t key, upb_value *v,
   const upb_tabent *e = findentry(t, key, hash, eql);
   if (e) {
     if (v) {
-      _upb_value_setval(v, e->val.val, t->ctype);
+      _upb_value_setval(v, e->val.val);
     }
     return true;
   } else {
@@ -1435,7 +1566,6 @@ static void insert(upb_table *t, lookupkey_t key, upb_tabkey tabkey,
   upb_tabent *our_e;
 
   UPB_ASSERT(findentry(t, key, hash, eql) == NULL);
-  UPB_ASSERT_DEBUGVAR(val.ctype == t->ctype);
 
   t->count++;
   mainpos_e = getentry_mutable(t, hash);
@@ -1481,7 +1611,7 @@ static bool rm(upb_table *t, lookupkey_t key, upb_value *val,
   if (eql(chain->key, key)) {
     /* Element to remove is at the head of its chain. */
     t->count--;
-    if (val) _upb_value_setval(val, chain->val.val, t->ctype);
+    if (val) _upb_value_setval(val, chain->val.val);
     if (removed) *removed = chain->key;
     if (chain->next) {
       upb_tabent *move = (upb_tabent*)chain->next;
@@ -1501,7 +1631,7 @@ static bool rm(upb_table *t, lookupkey_t key, upb_value *val,
       /* Found element to remove. */
       upb_tabent *rm = (upb_tabent*)chain->next;
       t->count--;
-      if (val) _upb_value_setval(val, chain->next->val.val, t->ctype);
+      if (val) _upb_value_setval(val, chain->next->val.val);
       if (removed) *removed = rm->key;
       rm->key = 0;  /* Make the slot empty. */
       chain->next = rm->next;
@@ -1554,7 +1684,13 @@ static bool streql(upb_tabkey k1, lookupkey_t k2) {
 }
 
 bool upb_strtable_init2(upb_strtable *t, upb_ctype_t ctype, upb_alloc *a) {
-  return init(&t->t, ctype, 2, a);
+  return init(&t->t, 2, a);
+}
+
+void upb_strtable_clear(upb_strtable *t) {
+  size_t bytes = upb_table_size(&t->t) * sizeof(upb_tabent);
+  t->t.count = 0;
+  memset((char*)t->t.entries, 0, bytes);
 }
 
 void upb_strtable_uninit2(upb_strtable *t, upb_alloc *a) {
@@ -1568,18 +1704,14 @@ bool upb_strtable_resize(upb_strtable *t, size_t size_lg2, upb_alloc *a) {
   upb_strtable new_table;
   upb_strtable_iter i;
 
-  upb_check_alloc(&t->t, a);
-
-  if (!init(&new_table.t, t->t.ctype, size_lg2, a))
+  if (!init(&new_table.t, size_lg2, a))
     return false;
   upb_strtable_begin(&i, t);
   for ( ; !upb_strtable_done(&i); upb_strtable_next(&i)) {
+    upb_strview key = upb_strtable_iter_key(&i);
     upb_strtable_insert3(
-        &new_table,
-        upb_strtable_iter_key(&i),
-        upb_strtable_iter_keylength(&i),
-        upb_strtable_iter_value(&i),
-        a);
+        &new_table, key.data, key.size,
+        upb_strtable_iter_value(&i), a);
   }
   upb_strtable_uninit2(t, a);
   *t = new_table;
@@ -1591,8 +1723,6 @@ bool upb_strtable_insert3(upb_strtable *t, const char *k, size_t len,
   lookupkey_t key;
   upb_tabkey tabkey;
   uint32_t hash;
-
-  upb_check_alloc(&t->t, a);
 
   if (isfull(&t->t)) {
     /* Need to resize.  New table of double the size, add old elements to it. */
@@ -1621,7 +1751,10 @@ bool upb_strtable_remove3(upb_strtable *t, const char *key, size_t len,
   uint32_t hash = upb_murmur_hash2(key, len, 0);
   upb_tabkey tabkey;
   if (rm(&t->t, strkey2(key, len), val, &tabkey, hash, &streql)) {
-    upb_free(alloc, (void*)tabkey);
+    if (alloc) {
+      /* Arena-based allocs don't need to free and won't pass this. */
+      upb_free(alloc, (void*)tabkey);
+    }
     return true;
   } else {
     return false;
@@ -1629,10 +1762,6 @@ bool upb_strtable_remove3(upb_strtable *t, const char *key, size_t len,
 }
 
 /* Iteration */
-
-static const upb_tabent *str_tabent(const upb_strtable_iter *i) {
-  return &i->t->t.entries[i->index];
-}
 
 void upb_strtable_begin(upb_strtable_iter *i, const upb_strtable *t) {
   i->t = t;
@@ -1649,21 +1778,18 @@ bool upb_strtable_done(const upb_strtable_iter *i) {
          upb_tabent_isempty(str_tabent(i));
 }
 
-const char *upb_strtable_iter_key(const upb_strtable_iter *i) {
-  UPB_ASSERT(!upb_strtable_done(i));
-  return upb_tabstr(str_tabent(i)->key, NULL);
-}
-
-size_t upb_strtable_iter_keylength(const upb_strtable_iter *i) {
+upb_strview upb_strtable_iter_key(const upb_strtable_iter *i) {
+  upb_strview key;
   uint32_t len;
   UPB_ASSERT(!upb_strtable_done(i));
-  upb_tabstr(str_tabent(i)->key, &len);
-  return len;
+  key.data = upb_tabstr(str_tabent(i)->key, &len);
+  key.size = len;
+  return key;
 }
 
 upb_value upb_strtable_iter_value(const upb_strtable_iter *i) {
   UPB_ASSERT(!upb_strtable_done(i));
-  return _upb_value_val(str_tabent(i)->val.val, i->t->t.ctype);
+  return _upb_value_val(str_tabent(i)->val.val);
 }
 
 void upb_strtable_iter_setdone(upb_strtable_iter *i) {
@@ -1729,11 +1855,11 @@ static void check(upb_inttable *t) {
 #endif
 }
 
-bool upb_inttable_sizedinit(upb_inttable *t, upb_ctype_t ctype,
-                            size_t asize, int hsize_lg2, upb_alloc *a) {
+bool upb_inttable_sizedinit(upb_inttable *t, size_t asize, int hsize_lg2,
+                            upb_alloc *a) {
   size_t array_bytes;
 
-  if (!init(&t->t, ctype, hsize_lg2, a)) return false;
+  if (!init(&t->t, hsize_lg2, a)) return false;
   /* Always make the array part at least 1 long, so that we know key 0
    * won't be in the hash part, which simplifies things. */
   t->array_size = UPB_MAX(1, asize);
@@ -1750,7 +1876,7 @@ bool upb_inttable_sizedinit(upb_inttable *t, upb_ctype_t ctype,
 }
 
 bool upb_inttable_init2(upb_inttable *t, upb_ctype_t ctype, upb_alloc *a) {
-  return upb_inttable_sizedinit(t, ctype, 0, 4, a);
+  return upb_inttable_sizedinit(t, 0, 4, a);
 }
 
 void upb_inttable_uninit2(upb_inttable *t, upb_alloc *a) {
@@ -1764,8 +1890,6 @@ bool upb_inttable_insert2(upb_inttable *t, uintptr_t key, upb_value val,
   tabval.val = val.val;
   UPB_ASSERT(upb_arrhas(tabval));  /* This will reject (uint64_t)-1.  Fix this. */
 
-  upb_check_alloc(&t->t, a);
-
   if (key < t->array_size) {
     UPB_ASSERT(!upb_arrhas(t->array[key]));
     t->array_count++;
@@ -1776,7 +1900,7 @@ bool upb_inttable_insert2(upb_inttable *t, uintptr_t key, upb_value val,
       size_t i;
       upb_table new_table;
 
-      if (!init(&new_table, t->t.ctype, t->t.size_lg2 + 1, a)) {
+      if (!init(&new_table, t->t.size_lg2 + 1, a)) {
         return false;
       }
 
@@ -1785,7 +1909,7 @@ bool upb_inttable_insert2(upb_inttable *t, uintptr_t key, upb_value val,
         uint32_t hash;
         upb_value v;
 
-        _upb_value_setval(&v, e->val.val, t->t.ctype);
+        _upb_value_setval(&v, e->val.val);
         hash = upb_inthash(e->key);
         insert(&new_table, intkey(e->key), e->key, v, hash, &inthash, &inteql);
       }
@@ -1804,7 +1928,7 @@ bool upb_inttable_insert2(upb_inttable *t, uintptr_t key, upb_value val,
 bool upb_inttable_lookup(const upb_inttable *t, uintptr_t key, upb_value *v) {
   const upb_tabval *table_v = inttable_val_const(t, key);
   if (!table_v) return false;
-  if (v) _upb_value_setval(v, table_v->val, t->t.ctype);
+  if (v) _upb_value_setval(v, table_v->val);
   return true;
 }
 
@@ -1822,7 +1946,7 @@ bool upb_inttable_remove(upb_inttable *t, uintptr_t key, upb_value *val) {
       upb_tabval empty = UPB_TABVALUE_EMPTY_INIT;
       t->array_count--;
       if (val) {
-        _upb_value_setval(val, t->array[key].val, t->t.ctype);
+        _upb_value_setval(val, t->array[key].val);
       }
       mutable_array(t)[key] = empty;
       success = true;
@@ -1837,7 +1961,6 @@ bool upb_inttable_remove(upb_inttable *t, uintptr_t key, upb_value *val) {
 }
 
 bool upb_inttable_push2(upb_inttable *t, upb_value val, upb_alloc *a) {
-  upb_check_alloc(&t->t, a);
   return upb_inttable_insert2(t, upb_inttable_count(t), val, a);
 }
 
@@ -1850,7 +1973,6 @@ upb_value upb_inttable_pop(upb_inttable *t) {
 
 bool upb_inttable_insertptr2(upb_inttable *t, const void *key, upb_value val,
                              upb_alloc *a) {
-  upb_check_alloc(&t->t, a);
   return upb_inttable_insert2(t, (uintptr_t)key, val, a);
 }
 
@@ -1874,8 +1996,6 @@ void upb_inttable_compact2(upb_inttable *t, upb_alloc *a) {
   size_t arr_count;
   int size_lg2;
   upb_inttable new_t;
-
-  upb_check_alloc(&t->t, a);
 
   upb_inttable_begin(&i, t);
   for (; !upb_inttable_done(&i); upb_inttable_next(&i)) {
@@ -1909,7 +2029,7 @@ void upb_inttable_compact2(upb_inttable *t, upb_alloc *a) {
     size_t hash_size = hash_count ? (hash_count / MAX_LOAD) + 1 : 0;
     int hashsize_lg2 = log2ceil(hash_size);
 
-    upb_inttable_sizedinit(&new_t, t->t.ctype, arr_size, hashsize_lg2, a);
+    upb_inttable_sizedinit(&new_t, arr_size, hashsize_lg2, a);
     upb_inttable_begin(&i, t);
     for (; !upb_inttable_done(&i); upb_inttable_next(&i)) {
       uintptr_t k = upb_inttable_iter_key(&i);
@@ -1975,8 +2095,7 @@ uintptr_t upb_inttable_iter_key(const upb_inttable_iter *i) {
 upb_value upb_inttable_iter_value(const upb_inttable_iter *i) {
   UPB_ASSERT(!upb_inttable_done(i));
   return _upb_value_val(
-      i->array_part ? i->t->array[i->index].val : int_tabent(i)->val.val,
-      i->t->t.ctype);
+      i->array_part ? i->t->array[i->index].val : int_tabent(i)->val.val);
 }
 
 void upb_inttable_iter_setdone(upb_inttable_iter *i) {
@@ -2016,7 +2135,8 @@ uint32_t upb_murmur_hash2(const void *key, size_t len, uint32_t seed) {
   /* Mix 4 bytes at a time into the hash */
   const uint8_t * data = (const uint8_t *)key;
   while(len >= 4) {
-    uint32_t k = *(uint32_t *)data;
+    uint32_t k;
+    memcpy(&k, data, sizeof(k));
 
     k *= m;
     k ^= k >> r;
@@ -2936,6 +3056,7 @@ struct upb_fielddef {
   const upb_filedef *file;
   const upb_msgdef *msgdef;
   const char *full_name;
+  const char *json_name;
   union {
     int64_t sint;
     uint64_t uint;
@@ -2951,7 +3072,8 @@ struct upb_fielddef {
     const google_protobuf_FieldDescriptorProto *unresolved;
   } sub;
   uint32_t number_;
-  uint32_t index_;
+  uint16_t index_;
+  uint16_t layout_index;
   uint32_t selector_base;  /* Used to index into a upb::Handlers table. */
   bool is_extension_;
   bool lazy_;
@@ -2961,6 +3083,7 @@ struct upb_fielddef {
 };
 
 struct upb_msgdef {
+  const upb_msglayout *layout;
   const upb_filedef *file;
   const char *full_name;
   uint32_t selector_count;
@@ -3024,10 +3147,15 @@ struct upb_symtab {
 
 /* Inside a symtab we store tagged pointers to specific def types. */
 typedef enum {
-  UPB_DEFTYPE_MSG = 0,
-  UPB_DEFTYPE_ENUM = 1,
-  UPB_DEFTYPE_FIELD = 2,
-  UPB_DEFTYPE_ONEOF = 3
+  UPB_DEFTYPE_FIELD = 0,
+
+  /* Only inside symtab table. */
+  UPB_DEFTYPE_MSG = 1,
+  UPB_DEFTYPE_ENUM = 2,
+
+  /* Only inside message table. */
+  UPB_DEFTYPE_ONEOF = 1,
+  UPB_DEFTYPE_FIELD_JSONNAME = 2
 } upb_deftype_t;
 
 static const void *unpack_def(upb_value v, upb_deftype_t type) {
@@ -3260,7 +3388,7 @@ int32_t upb_enumdef_default(const upb_enumdef *e) {
 }
 
 int upb_enumdef_numvals(const upb_enumdef *e) {
-  return upb_strtable_count(&e->ntoi);
+  return (int)upb_strtable_count(&e->ntoi);
 }
 
 void upb_enum_begin(upb_enum_iter *i, const upb_enumdef *e) {
@@ -3288,7 +3416,7 @@ const char *upb_enumdef_iton(const upb_enumdef *def, int32_t num) {
 }
 
 const char *upb_enum_iter_name(upb_enum_iter *iter) {
-  return upb_strtable_iter_key(iter);
+  return upb_strtable_iter_key(iter).data;
 }
 
 int32_t upb_enum_iter_number(upb_enum_iter *iter) {
@@ -3369,47 +3497,12 @@ const char *upb_fielddef_name(const upb_fielddef *f) {
   return shortdefname(f->full_name);
 }
 
-uint32_t upb_fielddef_selectorbase(const upb_fielddef *f) {
-  return f->selector_base;
+const char *upb_fielddef_jsonname(const upb_fielddef *f) {
+  return f->json_name;
 }
 
-size_t upb_fielddef_getjsonname(const upb_fielddef *f, char *buf, size_t len) {
-  const char *name = upb_fielddef_name(f);
-  size_t src, dst = 0;
-  bool ucase_next = false;
-
-#define WRITE(byte) \
-  ++dst; \
-  if (dst < len) buf[dst - 1] = byte; \
-  else if (dst == len) buf[dst - 1] = '\0'
-
-  if (!name) {
-    WRITE('\0');
-    return 0;
-  }
-
-  /* Implement the transformation as described in the spec:
-   *   1. upper case all letters after an underscore.
-   *   2. remove all underscores.
-   */
-  for (src = 0; name[src]; src++) {
-    if (name[src] == '_') {
-      ucase_next = true;
-      continue;
-    }
-
-    if (ucase_next) {
-      WRITE(toupper(name[src]));
-      ucase_next = false;
-    } else {
-      WRITE(name[src]);
-    }
-  }
-
-  WRITE('\0');
-  return dst;
-
-#undef WRITE
+uint32_t upb_fielddef_selectorbase(const upb_fielddef *f) {
+  return f->selector_base;
 }
 
 const upb_msgdef *upb_fielddef_containingtype(const upb_fielddef *f) {
@@ -3432,7 +3525,7 @@ int64_t upb_fielddef_defaultint64(const upb_fielddef *f) {
 
 int32_t upb_fielddef_defaultint32(const upb_fielddef *f) {
   chkdefaulttype(f, UPB_TYPE_INT32);
-  return f->defaultval.sint;
+  return (int32_t)f->defaultval.sint;
 }
 
 uint64_t upb_fielddef_defaultuint64(const upb_fielddef *f) {
@@ -3442,7 +3535,7 @@ uint64_t upb_fielddef_defaultuint64(const upb_fielddef *f) {
 
 uint32_t upb_fielddef_defaultuint32(const upb_fielddef *f) {
   chkdefaulttype(f, UPB_TYPE_UINT32);
-  return f->defaultval.uint;
+  return (uint32_t)f->defaultval.uint;
 }
 
 bool upb_fielddef_defaultbool(const upb_fielddef *f) {
@@ -3484,6 +3577,10 @@ const upb_enumdef *upb_fielddef_enumsubdef(const upb_fielddef *f) {
   return f->sub.enumdef;
 }
 
+const upb_msglayout_field *upb_fielddef_layout(const upb_fielddef *f) {
+  return &f->msgdef->layout->fields[f->layout_index];
+}
+
 bool upb_fielddef_issubmsg(const upb_fielddef *f) {
   return upb_fielddef_type(f) == UPB_TYPE_MESSAGE;
 }
@@ -3513,6 +3610,7 @@ bool upb_fielddef_hassubdef(const upb_fielddef *f) {
 bool upb_fielddef_haspresence(const upb_fielddef *f) {
   if (upb_fielddef_isseq(f)) return false;
   if (upb_fielddef_issubmsg(f)) return true;
+  if (upb_fielddef_containingoneof(f)) return true;
   return f->file->syntax == UPB_SYNTAX_PROTO2;
 }
 
@@ -3592,18 +3690,39 @@ bool upb_msgdef_lookupname(const upb_msgdef *m, const char *name, size_t len,
 
   *o = unpack_def(val, UPB_DEFTYPE_ONEOF);
   *f = unpack_def(val, UPB_DEFTYPE_FIELD);
-  UPB_ASSERT((*o != NULL) ^ (*f != NULL));  /* Exactly one of the two should be set. */
-  return true;
+  return *o || *f;  /* False if this was a JSON name. */
+}
+
+const upb_fielddef *upb_msgdef_lookupjsonname(const upb_msgdef *m,
+                                              const char *name, size_t len) {
+  upb_value val;
+  const upb_fielddef* f;
+
+  if (!upb_strtable_lookup2(&m->ntof, name, len, &val)) {
+    return NULL;
+  }
+
+  f = unpack_def(val, UPB_DEFTYPE_FIELD);
+  if (!f) f = unpack_def(val, UPB_DEFTYPE_FIELD_JSONNAME);
+
+  return f;
 }
 
 int upb_msgdef_numfields(const upb_msgdef *m) {
-  /* The number table contains only fields. */
-  return upb_inttable_count(&m->itof);
+  return m->field_count;
 }
 
 int upb_msgdef_numoneofs(const upb_msgdef *m) {
-  /* The name table includes oneofs, and the number table does not. */
-  return upb_strtable_count(&m->ntof) - upb_inttable_count(&m->itof);
+  return m->oneof_count;
+}
+
+const upb_msglayout *upb_msgdef_layout(const upb_msgdef *m) {
+  return m->layout;
+}
+
+const upb_fielddef *_upb_msgdef_field(const upb_msgdef *m, int i) {
+  if (i >= m->field_count) return NULL;
+  return &m->fields[i];
 }
 
 bool upb_msgdef_mapentry(const upb_msgdef *m) {
@@ -3688,7 +3807,7 @@ const upb_msgdef *upb_oneofdef_containingtype(const upb_oneofdef *o) {
 }
 
 int upb_oneofdef_numfields(const upb_oneofdef *o) {
-  return upb_strtable_count(&o->ntof);
+  return (int)upb_strtable_count(&o->ntof);
 }
 
 uint32_t upb_oneofdef_index(const upb_oneofdef *o) {
@@ -3728,6 +3847,220 @@ void upb_oneof_iter_setdone(upb_oneof_iter *iter) {
   upb_inttable_iter_setdone(iter);
 }
 
+/* Dynamic Layout Generation. *************************************************/
+
+static bool is_power_of_two(size_t val) {
+  return (val & (val - 1)) == 0;
+}
+
+/* Align up to the given power of 2. */
+static size_t align_up(size_t val, size_t align) {
+  UPB_ASSERT(is_power_of_two(align));
+  return (val + align - 1) & ~(align - 1);
+}
+
+static size_t div_round_up(size_t n, size_t d) {
+  return (n + d - 1) / d;
+}
+
+static size_t upb_msgval_sizeof(upb_fieldtype_t type) {
+  switch (type) {
+    case UPB_TYPE_DOUBLE:
+    case UPB_TYPE_INT64:
+    case UPB_TYPE_UINT64:
+      return 8;
+    case UPB_TYPE_ENUM:
+    case UPB_TYPE_INT32:
+    case UPB_TYPE_UINT32:
+    case UPB_TYPE_FLOAT:
+      return 4;
+    case UPB_TYPE_BOOL:
+      return 1;
+    case UPB_TYPE_MESSAGE:
+      return sizeof(void*);
+    case UPB_TYPE_BYTES:
+    case UPB_TYPE_STRING:
+      return sizeof(upb_strview);
+  }
+  UPB_UNREACHABLE();
+}
+
+static uint8_t upb_msg_fielddefsize(const upb_fielddef *f) {
+  if (upb_msgdef_mapentry(upb_fielddef_containingtype(f))) {
+    upb_map_entry ent;
+    UPB_ASSERT(sizeof(ent.k) == sizeof(ent.v));
+    return sizeof(ent.k);
+  } else if (upb_fielddef_isseq(f)) {
+    return sizeof(void*);
+  } else {
+    return upb_msgval_sizeof(upb_fielddef_type(f));
+  }
+}
+
+static uint32_t upb_msglayout_place(upb_msglayout *l, size_t size) {
+  uint32_t ret;
+
+  l->size = align_up(l->size, size);
+  ret = l->size;
+  l->size += size;
+  return ret;
+}
+
+/* This function is the dynamic equivalent of message_layout.{cc,h} in upbc.
+ * It computes a dynamic layout for all of the fields in |m|. */
+static bool make_layout(const upb_symtab *symtab, const upb_msgdef *m) {
+  upb_msglayout *l = (upb_msglayout*)m->layout;
+  upb_msg_field_iter it;
+  upb_msg_oneof_iter oit;
+  size_t hasbit;
+  size_t submsg_count = m->submsg_field_count;
+  const upb_msglayout **submsgs;
+  upb_msglayout_field *fields;
+  upb_alloc *alloc = upb_arena_alloc(symtab->arena);
+
+  memset(l, 0, sizeof(*l));
+
+  fields = upb_malloc(alloc, upb_msgdef_numfields(m) * sizeof(*fields));
+  submsgs = upb_malloc(alloc, submsg_count * sizeof(*submsgs));
+
+  if ((!fields && upb_msgdef_numfields(m)) ||
+      (!submsgs && submsg_count)) {
+    /* OOM. */
+    return false;
+  }
+
+  l->field_count = upb_msgdef_numfields(m);
+  l->fields = fields;
+  l->submsgs = submsgs;
+
+  if (upb_msgdef_mapentry(m)) {
+    /* TODO(haberman): refactor this method so this special case is more
+     * elegant. */
+    const upb_fielddef *key = upb_msgdef_itof(m, 1);
+    const upb_fielddef *val = upb_msgdef_itof(m, 2);
+    fields[0].number = 1;
+    fields[1].number = 2;
+    fields[0].label = UPB_LABEL_OPTIONAL;
+    fields[1].label = UPB_LABEL_OPTIONAL;
+    fields[0].presence = 0;
+    fields[1].presence = 0;
+    fields[0].descriptortype = upb_fielddef_descriptortype(key);
+    fields[1].descriptortype = upb_fielddef_descriptortype(val);
+    fields[0].offset = 0;
+    fields[1].offset = sizeof(upb_strview);
+    fields[1].submsg_index = 0;
+
+    if (upb_fielddef_type(val) == UPB_TYPE_MESSAGE) {
+      submsgs[0] = upb_fielddef_msgsubdef(val)->layout;
+    }
+
+    l->field_count = 2;
+    l->size = 2 * sizeof(upb_strview);align_up(l->size, 8);
+    return true;
+  }
+
+  /* Allocate data offsets in three stages:
+   *
+   * 1. hasbits.
+   * 2. regular fields.
+   * 3. oneof fields.
+   *
+   * OPT: There is a lot of room for optimization here to minimize the size.
+   */
+
+  /* Allocate hasbits and set basic field attributes. */
+  submsg_count = 0;
+  for (upb_msg_field_begin(&it, m), hasbit = 0;
+       !upb_msg_field_done(&it);
+       upb_msg_field_next(&it)) {
+    upb_fielddef* f = upb_msg_iter_field(&it);
+    upb_msglayout_field *field = &fields[upb_fielddef_index(f)];
+
+    field->number = upb_fielddef_number(f);
+    field->descriptortype = upb_fielddef_descriptortype(f);
+    field->label = upb_fielddef_label(f);
+
+    if (upb_fielddef_ismap(f)) {
+      field->label = UPB_LABEL_MAP;
+    }
+
+    /* TODO: we probably should sort the fields by field number to match the
+     * output of upbc, and to improve search speed for the table parser. */
+    f->layout_index = f->index_;
+
+    if (upb_fielddef_issubmsg(f)) {
+      const upb_msgdef *subm = upb_fielddef_msgsubdef(f);
+      field->submsg_index = submsg_count++;
+      submsgs[field->submsg_index] = subm->layout;
+    }
+
+    if (upb_fielddef_haspresence(f) && !upb_fielddef_containingoneof(f)) {
+      /* We don't use hasbit 0, so that 0 can indicate "no presence" in the
+       * table. This wastes one hasbit, but we don't worry about it for now. */
+      field->presence = ++hasbit;
+    } else {
+      field->presence = 0;
+    }
+  }
+
+  /* Account for space used by hasbits. */
+  l->size = div_round_up(hasbit, 8);
+
+  /* Allocate non-oneof fields. */
+  for (upb_msg_field_begin(&it, m); !upb_msg_field_done(&it);
+       upb_msg_field_next(&it)) {
+    const upb_fielddef* f = upb_msg_iter_field(&it);
+    size_t field_size = upb_msg_fielddefsize(f);
+    size_t index = upb_fielddef_index(f);
+
+    if (upb_fielddef_containingoneof(f)) {
+      /* Oneofs are handled separately below. */
+      continue;
+    }
+
+    fields[index].offset = upb_msglayout_place(l, field_size);
+  }
+
+  /* Allocate oneof fields.  Each oneof field consists of a uint32 for the case
+   * and space for the actual data. */
+  for (upb_msg_oneof_begin(&oit, m); !upb_msg_oneof_done(&oit);
+       upb_msg_oneof_next(&oit)) {
+    const upb_oneofdef* o = upb_msg_iter_oneof(&oit);
+    upb_oneof_iter fit;
+
+    size_t case_size = sizeof(uint32_t);  /* Could potentially optimize this. */
+    size_t field_size = 0;
+    uint32_t case_offset;
+    uint32_t data_offset;
+
+    /* Calculate field size: the max of all field sizes. */
+    for (upb_oneof_begin(&fit, o);
+         !upb_oneof_done(&fit);
+         upb_oneof_next(&fit)) {
+      const upb_fielddef* f = upb_oneof_iter_field(&fit);
+      field_size = UPB_MAX(field_size, upb_msg_fielddefsize(f));
+    }
+
+    /* Align and allocate case offset. */
+    case_offset = upb_msglayout_place(l, case_size);
+    data_offset = upb_msglayout_place(l, field_size);
+
+    for (upb_oneof_begin(&fit, o);
+         !upb_oneof_done(&fit);
+         upb_oneof_next(&fit)) {
+      const upb_fielddef* f = upb_oneof_iter_field(&fit);
+      fields[upb_fielddef_index(f)].offset = data_offset;
+      fields[upb_fielddef_index(f)].presence = ~case_offset;
+    }
+  }
+
+  /* Size of the entire structure should be a multiple of its greatest
+   * alignment.  TODO: track overall alignment for real? */
+  l->size = align_up(l->size, 8);
+
+  return true;
+}
+
 /* Code to build defs from descriptor protos. *********************************/
 
 /* There is a question of how much validation to do here.  It will be difficult
@@ -3740,11 +4073,12 @@ void upb_oneof_iter_setdone(upb_oneof_iter *iter) {
 
 typedef struct {
   const upb_symtab *symtab;
-  upb_filedef *file;  /* File we are building. */
-  upb_alloc *alloc;    /* Allocate defs here. */
-  upb_alloc *tmp;      /* Alloc for addtab and any other tmp data. */
-  upb_strtable *addtab;  /* full_name -> packed def ptr for new defs. */
-  upb_status *status;  /* Record errors here. */
+  upb_filedef *file;              /* File we are building. */
+  upb_alloc *alloc;               /* Allocate defs here. */
+  upb_alloc *tmp;                 /* Alloc for addtab and any other tmp data. */
+  upb_strtable *addtab;           /* full_name -> packed def ptr for new defs */
+  const upb_msglayout **layouts;  /* NULL if we should build layouts. */
+  upb_status *status;             /* Record errors here. */
 } symtab_addctx;
 
 static char* strviewdup(const symtab_addctx *ctx, upb_strview view) {
@@ -3774,6 +4108,51 @@ static const char *makefullname(const symtab_addctx *ctx, const char *prefix,
   } else {
     return strviewdup(ctx, name);
   }
+}
+
+size_t getjsonname(const char *name, char *buf, size_t len) {
+  size_t src, dst = 0;
+  bool ucase_next = false;
+
+#define WRITE(byte) \
+  ++dst; \
+  if (dst < len) buf[dst - 1] = byte; \
+  else if (dst == len) buf[dst - 1] = '\0'
+
+  if (!name) {
+    WRITE('\0');
+    return 0;
+  }
+
+  /* Implement the transformation as described in the spec:
+   *   1. upper case all letters after an underscore.
+   *   2. remove all underscores.
+   */
+  for (src = 0; name[src]; src++) {
+    if (name[src] == '_') {
+      ucase_next = true;
+      continue;
+    }
+
+    if (ucase_next) {
+      WRITE(toupper(name[src]));
+      ucase_next = false;
+    } else {
+      WRITE(name[src]);
+    }
+  }
+
+  WRITE('\0');
+  return dst;
+
+#undef WRITE
+}
+
+static char* makejsonname(const char* name, upb_alloc *alloc) {
+  size_t size = getjsonname(name, NULL, 0);
+  char* json_name = upb_malloc(alloc, size);
+  getjsonname(name, json_name, size);
+  return json_name;
 }
 
 static bool symtab_add(const symtab_addctx *ctx, const char *name,
@@ -3899,7 +4278,7 @@ static bool parse_default(const symtab_addctx *ctx, const char *str, size_t len,
     }
     case UPB_TYPE_INT64: {
       /* XXX: Need to write our own strtoll, since it's not available in c89. */
-      long long val = strtol(str, &end, 0);
+      int64_t val = strtol(str, &end, 0);
       CHK(val <= INT64_MAX && val >= INT64_MIN && errno != ERANGE && !*end);
       f->defaultval.sint = val;
       break;
@@ -3912,7 +4291,7 @@ static bool parse_default(const symtab_addctx *ctx, const char *str, size_t len,
     }
     case UPB_TYPE_UINT64: {
       /* XXX: Need to write our own strtoull, since it's not available in c89. */
-      unsigned long long val = strtoul(str, &end, 0);
+      uint64_t val = strtoul(str, &end, 0);
       CHK(val <= UINT64_MAX && errno != ERANGE && !*end);
       f->defaultval.uint = val;
       break;
@@ -3989,6 +4368,7 @@ static bool create_fielddef(
   const google_protobuf_FieldOptions *options;
   upb_strview name;
   const char *full_name;
+  const char *json_name;
   const char *shortname;
   uint32_t field_number;
 
@@ -4002,6 +4382,13 @@ static bool create_fielddef(
   full_name = makefullname(ctx, prefix, name);
   shortname = shortdefname(full_name);
 
+  if (google_protobuf_FieldDescriptorProto_has_json_name(field_proto)) {
+    json_name = strviewdup(
+        ctx, google_protobuf_FieldDescriptorProto_json_name(field_proto));
+  } else {
+    json_name = makejsonname(shortname, ctx->alloc);
+  }
+
   field_number = google_protobuf_FieldDescriptorProto_number(field_proto);
 
   if (field_number == 0 || field_number > UPB_MAX_FIELDNUMBER) {
@@ -4011,33 +4398,65 @@ static bool create_fielddef(
 
   if (m) {
     /* direct message field. */
-    upb_value v, packed_v;
+    upb_value v, field_v, json_v;
+    size_t json_size;
 
     f = (upb_fielddef*)&m->fields[m->field_count++];
     f->msgdef = m;
     f->is_extension_ = false;
 
-    packed_v = pack_def(f, UPB_DEFTYPE_FIELD);
-    v = upb_value_constptr(f);
-
-    if (!upb_strtable_insert3(&m->ntof, name.data, name.size, packed_v, alloc)) {
+    if (upb_strtable_lookup(&m->ntof, shortname, NULL)) {
       upb_status_seterrf(ctx->status, "duplicate field name (%s)", shortname);
       return false;
     }
 
-    if (!upb_inttable_insert2(&m->itof, field_number, v, alloc)) {
+    if (upb_strtable_lookup(&m->ntof, json_name, NULL)) {
+      upb_status_seterrf(ctx->status, "duplicate json_name (%s)", json_name);
+      return false;
+    }
+
+    if (upb_inttable_lookup(&m->itof, field_number, NULL)) {
       upb_status_seterrf(ctx->status, "duplicate field number (%u)",
                          field_number);
       return false;
     }
+
+    field_v = pack_def(f, UPB_DEFTYPE_FIELD);
+    json_v = pack_def(f, UPB_DEFTYPE_FIELD_JSONNAME);
+    v = upb_value_constptr(f);
+    json_size = strlen(json_name);
+
+    CHK_OOM(
+        upb_strtable_insert3(&m->ntof, name.data, name.size, field_v, alloc));
+    CHK_OOM(upb_inttable_insert2(&m->itof, field_number, v, alloc));
+
+    if (strcmp(shortname, json_name) != 0) {
+      upb_strtable_insert3(&m->ntof, json_name, json_size, json_v, alloc);
+    }
+
+    if (ctx->layouts) {
+      const upb_msglayout_field *fields = m->layout->fields;
+      int count = m->layout->field_count;
+      bool found = false;
+      int i;
+      for (i = 0; i < count; i++) {
+        if (fields[i].number == field_number) {
+          f->layout_index = i;
+          found = true;
+          break;
+        }
+      }
+      UPB_ASSERT(found);
+    }
   } else {
     /* extension field. */
-    f = (upb_fielddef*)&ctx->file->exts[ctx->file->ext_count];
+    f = (upb_fielddef*)&ctx->file->exts[ctx->file->ext_count++];
     f->is_extension_ = true;
     CHK_OOM(symtab_add(ctx, full_name, pack_def(f, UPB_DEFTYPE_FIELD)));
   }
 
   f->full_name = full_name;
+  f->json_name = json_name;
   f->file = ctx->file;
   f->type_ = (int)google_protobuf_FieldDescriptorProto_type(field_proto);
   f->label_ = (int)google_protobuf_FieldDescriptorProto_label(field_proto);
@@ -4166,7 +4585,7 @@ static bool create_enumdef(
   return true;
 }
 
-static bool create_msgdef(const symtab_addctx *ctx, const char *prefix,
+static bool create_msgdef(symtab_addctx *ctx, const char *prefix,
                           const google_protobuf_DescriptorProto *msg_proto) {
   upb_msgdef *m;
   const google_protobuf_MessageOptions *options;
@@ -4194,6 +4613,14 @@ static bool create_msgdef(const symtab_addctx *ctx, const char *prefix,
 
   if (options) {
     m->map_entry = google_protobuf_MessageOptions_map_entry(options);
+  }
+
+  if (ctx->layouts) {
+    m->layout = *ctx->layouts;
+    ctx->layouts++;
+  } else {
+    /* Allocate now (to allow cross-linking), populate later. */
+    m->layout = upb_malloc(ctx->alloc, sizeof(*m->layout));
   }
 
   oneofs = google_protobuf_DescriptorProto_oneof_decl(msg_proto, &n);
@@ -4342,7 +4769,7 @@ static bool resolve_fielddef(const symtab_addctx *ctx, const char *prefix,
 }
 
 static bool build_filedef(
-    const symtab_addctx *ctx, upb_filedef *file,
+    symtab_addctx *ctx, upb_filedef *file,
     const google_protobuf_FileDescriptorProto *file_proto) {
   upb_alloc *alloc = ctx->alloc;
   const google_protobuf_FileOptions *file_options_proto;
@@ -4396,7 +4823,8 @@ static bool build_filedef(
     } else if (streql_view(syntax, "proto3")) {
       file->syntax = UPB_SYNTAX_PROTO3;
     } else {
-      upb_status_seterrf(ctx->status, "Invalid syntax '%s'", syntax);
+      upb_status_seterrf(ctx->status, "Invalid syntax '" UPB_STRVIEW_FORMAT "'",
+                         UPB_STRVIEW_ARGS(syntax));
       return false;
     }
   } else {
@@ -4456,7 +4884,7 @@ static bool build_filedef(
     CHK(create_fielddef(ctx, file->package, NULL, exts[i]));
   }
 
-  /* Now that all names are in the table, resolve references. */
+  /* Now that all names are in the table, build layouts and resolve refs. */
   for (i = 0; i < file->ext_count; i++) {
     CHK(resolve_fielddef(ctx, file->package, (upb_fielddef*)&file->exts[i]));
   }
@@ -4466,6 +4894,13 @@ static bool build_filedef(
     int j;
     for (j = 0; j < m->field_count; j++) {
       CHK(resolve_fielddef(ctx, m->full_name, (upb_fielddef*)&m->fields[j]));
+    }
+  }
+
+  if (!ctx->layouts) {
+    for (i = 0; i < file->msg_count; i++) {
+      const upb_msgdef *m = &file->msgs[i];
+      make_layout(ctx->symtab, m);
     }
   }
 
@@ -4483,10 +4918,9 @@ static bool upb_symtab_addtotabs(upb_symtab *s, symtab_addctx *ctx,
 
   upb_strtable_begin(&iter, ctx->addtab);
   for (; !upb_strtable_done(&iter); upb_strtable_next(&iter)) {
-    const char *key = upb_strtable_iter_key(&iter);
-    size_t keylen = upb_strtable_iter_keylength(&iter);
+    upb_strview key = upb_strtable_iter_key(&iter);
     upb_value value = upb_strtable_iter_value(&iter);
-    CHK_OOM(upb_strtable_insert3(&s->syms, key, keylen, value, alloc));
+    CHK_OOM(upb_strtable_insert3(&s->syms, key.data, key.size, value, alloc));
   }
 
   return true;
@@ -4588,9 +5022,13 @@ const upb_filedef *upb_symtab_lookupfile(const upb_symtab *s, const char *name) 
                                                   : NULL;
 }
 
-const upb_filedef *upb_symtab_addfile(
+int upb_symtab_filecount(const upb_symtab *s) {
+  return (int)upb_strtable_count(&s->files);
+}
+
+static const upb_filedef *_upb_symtab_addfile(
     upb_symtab *s, const google_protobuf_FileDescriptorProto *file_proto,
-    upb_status *status) {
+    const upb_msglayout **layouts, upb_status *status) {
   upb_arena *tmparena = upb_arena_new();
   upb_strtable addtab;
   upb_alloc *alloc = upb_arena_alloc(s->arena);
@@ -4603,6 +5041,7 @@ const upb_filedef *upb_symtab_addfile(
   ctx.alloc = alloc;
   ctx.tmp = upb_arena_alloc(tmparena);
   ctx.addtab = &addtab;
+  ctx.layouts = layouts;
   ctx.status = status;
 
   ok = file &&
@@ -4612,6 +5051,12 @@ const upb_filedef *upb_symtab_addfile(
 
   upb_arena_free(tmparena);
   return ok ? file : NULL;
+}
+
+const upb_filedef *upb_symtab_addfile(
+    upb_symtab *s, const google_protobuf_FileDescriptorProto *file_proto,
+    upb_status *status) {
+  return _upb_symtab_addfile(s, file_proto, NULL, status);
 }
 
 /* Include here since we want most of this file to be stdio-free. */
@@ -4649,7 +5094,7 @@ bool _upb_symtab_loaddefinit(upb_symtab *s, const upb_def_init *init) {
     goto err;
   }
 
-  if (!upb_symtab_addfile(s, file, &status)) goto err;
+  if (!_upb_symtab_addfile(s, file, init->layouts, &status)) goto err;
 
   upb_arena_free(arena);
   return true;
@@ -4665,8609 +5110,2427 @@ err:
 #undef CHK_OOM
 
 
-
-static bool is_power_of_two(size_t val) {
-  return (val & (val - 1)) == 0;
-}
-
-/* Align up to the given power of 2. */
-static size_t align_up(size_t val, size_t align) {
-  UPB_ASSERT(is_power_of_two(align));
-  return (val + align - 1) & ~(align - 1);
-}
-
-static size_t div_round_up(size_t n, size_t d) {
-  return (n + d - 1) / d;
-}
-
-static size_t upb_msgval_sizeof2(upb_fieldtype_t type) {
-  switch (type) {
-    case UPB_TYPE_DOUBLE:
-    case UPB_TYPE_INT64:
-    case UPB_TYPE_UINT64:
-      return 8;
-    case UPB_TYPE_ENUM:
-    case UPB_TYPE_INT32:
-    case UPB_TYPE_UINT32:
-    case UPB_TYPE_FLOAT:
-      return 4;
-    case UPB_TYPE_BOOL:
-      return 1;
-    case UPB_TYPE_MESSAGE:
-      return sizeof(void*);
-    case UPB_TYPE_BYTES:
-    case UPB_TYPE_STRING:
-      return sizeof(upb_strview);
-  }
-  UPB_UNREACHABLE();
-}
-
-static uint8_t upb_msg_fielddefsize(const upb_fielddef *f) {
-  if (upb_fielddef_isseq(f)) {
-    return sizeof(void*);
-  } else {
-    return upb_msgval_sizeof2(upb_fielddef_type(f));
-  }
-}
-
-
-/** upb_msglayout *************************************************************/
-
-static void upb_msglayout_free(upb_msglayout *l) {
-  upb_gfree(l);
-}
-
-static size_t upb_msglayout_place(upb_msglayout *l, size_t size) {
-  size_t ret;
-
-  l->size = align_up(l->size, size);
-  ret = l->size;
-  l->size += size;
-  return ret;
-}
-
-static bool upb_msglayout_init(const upb_msgdef *m,
-                               upb_msglayout *l,
-                               upb_msgfactory *factory) {
-  upb_msg_field_iter it;
-  upb_msg_oneof_iter oit;
-  size_t hasbit;
-  size_t submsg_count = 0;
-  const upb_msglayout **submsgs;
-  upb_msglayout_field *fields;
-
-  for (upb_msg_field_begin(&it, m);
-       !upb_msg_field_done(&it);
-       upb_msg_field_next(&it)) {
-    const upb_fielddef* f = upb_msg_iter_field(&it);
-    if (upb_fielddef_issubmsg(f)) {
-      submsg_count++;
-    }
-  }
-
-  memset(l, 0, sizeof(*l));
-
-  fields = upb_gmalloc(upb_msgdef_numfields(m) * sizeof(*fields));
-  submsgs = upb_gmalloc(submsg_count * sizeof(*submsgs));
-
-  if ((!fields && upb_msgdef_numfields(m)) ||
-      (!submsgs && submsg_count)) {
-    /* OOM. */
-    upb_gfree(fields);
-    upb_gfree(submsgs);
-    return false;
-  }
-
-  l->field_count = upb_msgdef_numfields(m);
-  l->fields = fields;
-  l->submsgs = submsgs;
-
-  /* Allocate data offsets in three stages:
-   *
-   * 1. hasbits.
-   * 2. regular fields.
-   * 3. oneof fields.
-   *
-   * OPT: There is a lot of room for optimization here to minimize the size.
-   */
-
-  /* Allocate hasbits and set basic field attributes. */
-  submsg_count = 0;
-  for (upb_msg_field_begin(&it, m), hasbit = 0;
-       !upb_msg_field_done(&it);
-       upb_msg_field_next(&it)) {
-    const upb_fielddef* f = upb_msg_iter_field(&it);
-    upb_msglayout_field *field = &fields[upb_fielddef_index(f)];
-
-    field->number = upb_fielddef_number(f);
-    field->descriptortype = upb_fielddef_descriptortype(f);
-    field->label = upb_fielddef_label(f);
-
-    if (upb_fielddef_issubmsg(f)) {
-      const upb_msglayout *sub_layout =
-          upb_msgfactory_getlayout(factory, upb_fielddef_msgsubdef(f));
-      field->submsg_index = submsg_count++;
-      submsgs[field->submsg_index] = sub_layout;
-    }
-
-    if (upb_fielddef_haspresence(f) && !upb_fielddef_containingoneof(f)) {
-      field->presence = (hasbit++);
-    } else {
-      field->presence = 0;
-    }
-  }
-
-  /* Account for space used by hasbits. */
-  l->size = div_round_up(hasbit, 8);
-
-  /* Allocate non-oneof fields. */
-  for (upb_msg_field_begin(&it, m); !upb_msg_field_done(&it);
-       upb_msg_field_next(&it)) {
-    const upb_fielddef* f = upb_msg_iter_field(&it);
-    size_t field_size = upb_msg_fielddefsize(f);
-    size_t index = upb_fielddef_index(f);
-
-    if (upb_fielddef_containingoneof(f)) {
-      /* Oneofs are handled separately below. */
-      continue;
-    }
-
-    fields[index].offset = upb_msglayout_place(l, field_size);
-  }
-
-  /* Allocate oneof fields.  Each oneof field consists of a uint32 for the case
-   * and space for the actual data. */
-  for (upb_msg_oneof_begin(&oit, m); !upb_msg_oneof_done(&oit);
-       upb_msg_oneof_next(&oit)) {
-    const upb_oneofdef* o = upb_msg_iter_oneof(&oit);
-    upb_oneof_iter fit;
-
-    size_t case_size = sizeof(uint32_t);  /* Could potentially optimize this. */
-    size_t field_size = 0;
-    uint32_t case_offset;
-    uint32_t data_offset;
-
-    /* Calculate field size: the max of all field sizes. */
-    for (upb_oneof_begin(&fit, o);
-         !upb_oneof_done(&fit);
-         upb_oneof_next(&fit)) {
-      const upb_fielddef* f = upb_oneof_iter_field(&fit);
-      field_size = UPB_MAX(field_size, upb_msg_fielddefsize(f));
-    }
-
-    /* Align and allocate case offset. */
-    case_offset = upb_msglayout_place(l, case_size);
-    data_offset = upb_msglayout_place(l, field_size);
-
-    for (upb_oneof_begin(&fit, o);
-         !upb_oneof_done(&fit);
-         upb_oneof_next(&fit)) {
-      const upb_fielddef* f = upb_oneof_iter_field(&fit);
-      fields[upb_fielddef_index(f)].offset = data_offset;
-      fields[upb_fielddef_index(f)].presence = ~case_offset;
-    }
-  }
-
-  /* Size of the entire structure should be a multiple of its greatest
-   * alignment.  TODO: track overall alignment for real? */
-  l->size = align_up(l->size, 8);
-
-  return true;
-}
-
-
-/** upb_msgfactory ************************************************************/
-
-struct upb_msgfactory {
-  const upb_symtab *symtab;  /* We own a ref. */
-  upb_inttable layouts;
-};
-
-upb_msgfactory *upb_msgfactory_new(const upb_symtab *symtab) {
-  upb_msgfactory *ret = upb_gmalloc(sizeof(*ret));
-
-  ret->symtab = symtab;
-  upb_inttable_init(&ret->layouts, UPB_CTYPE_PTR);
-
-  return ret;
-}
-
-void upb_msgfactory_free(upb_msgfactory *f) {
-  upb_inttable_iter i;
-  upb_inttable_begin(&i, &f->layouts);
-  for(; !upb_inttable_done(&i); upb_inttable_next(&i)) {
-    upb_msglayout *l = upb_value_getptr(upb_inttable_iter_value(&i));
-    upb_msglayout_free(l);
-  }
-
-  upb_inttable_uninit(&f->layouts);
-  upb_gfree(f);
-}
-
-const upb_symtab *upb_msgfactory_symtab(const upb_msgfactory *f) {
-  return f->symtab;
-}
-
-const upb_msglayout *upb_msgfactory_getlayout(upb_msgfactory *f,
-                                              const upb_msgdef *m) {
-  upb_value v;
-  UPB_ASSERT(upb_symtab_lookupmsg(f->symtab, upb_msgdef_fullname(m)) == m);
-  UPB_ASSERT(!upb_msgdef_mapentry(m));
-
-  if (upb_inttable_lookupptr(&f->layouts, m, &v)) {
-    UPB_ASSERT(upb_value_getptr(v));
-    return upb_value_getptr(v);
-  } else {
-    /* In case of circular dependency, layout has to be inserted first. */
-    upb_msglayout *l = upb_gmalloc(sizeof(*l));
-    upb_msgfactory *mutable_f = (void*)f;
-    upb_inttable_insertptr(&mutable_f->layouts, m, upb_value_ptr(l));
-    UPB_ASSERT(l);
-    if (!upb_msglayout_init(m, l, f)) {
-      upb_msglayout_free(l);
-    }
-    return l;
-  }
-}
-/*
-** TODO(haberman): it's unclear whether a lot of the consistency checks should
-** UPB_ASSERT() or return false.
-*/
-
-
 #include <string.h>
 
 
-
-struct upb_handlers {
-  upb_handlercache *cache;
-  const upb_msgdef *msg;
-  const upb_handlers **sub;
-  const void *top_closure_type;
-  upb_handlers_tabent table[1];  /* Dynamically-sized field handler array. */
+static char field_size[] = {
+  0,/* 0 */
+  8, /* UPB_DESCRIPTOR_TYPE_DOUBLE */
+  4, /* UPB_DESCRIPTOR_TYPE_FLOAT */
+  8, /* UPB_DESCRIPTOR_TYPE_INT64 */
+  8, /* UPB_DESCRIPTOR_TYPE_UINT64 */
+  4, /* UPB_DESCRIPTOR_TYPE_INT32 */
+  8, /* UPB_DESCRIPTOR_TYPE_FIXED64 */
+  4, /* UPB_DESCRIPTOR_TYPE_FIXED32 */
+  1, /* UPB_DESCRIPTOR_TYPE_BOOL */
+  sizeof(upb_strview), /* UPB_DESCRIPTOR_TYPE_STRING */
+  sizeof(void*), /* UPB_DESCRIPTOR_TYPE_GROUP */
+  sizeof(void*), /* UPB_DESCRIPTOR_TYPE_MESSAGE */
+  sizeof(upb_strview), /* UPB_DESCRIPTOR_TYPE_BYTES */
+  4, /* UPB_DESCRIPTOR_TYPE_UINT32 */
+  4, /* UPB_DESCRIPTOR_TYPE_ENUM */
+  4, /* UPB_DESCRIPTOR_TYPE_SFIXED32 */
+  8, /* UPB_DESCRIPTOR_TYPE_SFIXED64 */
+  4, /* UPB_DESCRIPTOR_TYPE_SINT32 */
+  8, /* UPB_DESCRIPTOR_TYPE_SINT64 */
 };
 
-static void *upb_calloc(upb_arena *arena, size_t size) {
-  void *mem = upb_malloc(upb_arena_alloc(arena), size);
-  if (mem) {
-    memset(mem, 0, size);
-  }
-  return mem;
-}
-
-/* Defined for the sole purpose of having a unique pointer value for
- * UPB_NO_CLOSURE. */
-char _upb_noclosure;
-
-/* Given a selector for a STARTSUBMSG handler, resolves to a pointer to the
- * subhandlers for this submessage field. */
-#define SUBH(h, selector) (h->sub[selector])
-
-/* The selector for a submessage field is the field index. */
-#define SUBH_F(h, f) SUBH(h, upb_fielddef_index(f))
-
-static int32_t trygetsel(upb_handlers *h, const upb_fielddef *f,
-                         upb_handlertype_t type) {
-  upb_selector_t sel;
-  bool ok;
-
-  ok = upb_handlers_getselector(f, type, &sel);
-
-  UPB_ASSERT(upb_handlers_msgdef(h) == upb_fielddef_containingtype(f));
-  UPB_ASSERT(ok);
-
-  return sel;
-}
-
-static upb_selector_t handlers_getsel(upb_handlers *h, const upb_fielddef *f,
-                             upb_handlertype_t type) {
-  int32_t sel = trygetsel(h, f, type);
-  UPB_ASSERT(sel >= 0);
-  return sel;
-}
-
-static const void **returntype(upb_handlers *h, const upb_fielddef *f,
-                               upb_handlertype_t type) {
-  return &h->table[handlers_getsel(h, f, type)].attr.return_closure_type;
-}
-
-static bool doset(upb_handlers *h, int32_t sel, const upb_fielddef *f,
-                  upb_handlertype_t type, upb_func *func,
-                  const upb_handlerattr *attr) {
-  upb_handlerattr set_attr = UPB_HANDLERATTR_INIT;
-  const void *closure_type;
-  const void **context_closure_type;
-
-  UPB_ASSERT(!h->table[sel].func);
-
-  if (attr) {
-    set_attr = *attr;
-  }
-
-  /* Check that the given closure type matches the closure type that has been
-   * established for this context (if any). */
-  closure_type = set_attr.closure_type;
-
-  if (type == UPB_HANDLER_STRING) {
-    context_closure_type = returntype(h, f, UPB_HANDLER_STARTSTR);
-  } else if (f && upb_fielddef_isseq(f) &&
-             type != UPB_HANDLER_STARTSEQ &&
-             type != UPB_HANDLER_ENDSEQ) {
-    context_closure_type = returntype(h, f, UPB_HANDLER_STARTSEQ);
-  } else {
-    context_closure_type = &h->top_closure_type;
-  }
-
-  if (closure_type && *context_closure_type &&
-      closure_type != *context_closure_type) {
-    return false;
-  }
-
-  if (closure_type)
-    *context_closure_type = closure_type;
-
-  /* If this is a STARTSEQ or STARTSTR handler, check that the returned pointer
-   * matches any pre-existing expectations about what type is expected. */
-  if (type == UPB_HANDLER_STARTSEQ || type == UPB_HANDLER_STARTSTR) {
-    const void *return_type = set_attr.return_closure_type;
-    const void *table_return_type = h->table[sel].attr.return_closure_type;
-    if (return_type && table_return_type && return_type != table_return_type) {
-      return false;
-    }
-
-    if (table_return_type && !return_type) {
-      set_attr.return_closure_type = table_return_type;
-    }
-  }
-
-  h->table[sel].func = (upb_func*)func;
-  h->table[sel].attr = set_attr;
-  return true;
-}
-
-/* Returns the effective closure type for this handler (which will propagate
- * from outer frames if this frame has no START* handler).  Not implemented for
- * UPB_HANDLER_STRING at the moment since this is not needed.  Returns NULL is
- * the effective closure type is unspecified (either no handler was registered
- * to specify it or the handler that was registered did not specify the closure
- * type). */
-const void *effective_closure_type(upb_handlers *h, const upb_fielddef *f,
-                                   upb_handlertype_t type) {
-  const void *ret;
-  upb_selector_t sel;
-
-  UPB_ASSERT(type != UPB_HANDLER_STRING);
-  ret = h->top_closure_type;
-
-  if (upb_fielddef_isseq(f) &&
-      type != UPB_HANDLER_STARTSEQ &&
-      type != UPB_HANDLER_ENDSEQ &&
-      h->table[sel = handlers_getsel(h, f, UPB_HANDLER_STARTSEQ)].func) {
-    ret = h->table[sel].attr.return_closure_type;
-  }
-
-  if (type == UPB_HANDLER_STRING &&
-      h->table[sel = handlers_getsel(h, f, UPB_HANDLER_STARTSTR)].func) {
-    ret = h->table[sel].attr.return_closure_type;
-  }
-
-  /* The effective type of the submessage; not used yet.
-   * if (type == SUBMESSAGE &&
-   *     h->table[sel = handlers_getsel(h, f, UPB_HANDLER_STARTSUBMSG)].func) {
-   *   ret = h->table[sel].attr.return_closure_type;
-   * } */
-
-  return ret;
-}
-
-/* Checks whether the START* handler specified by f & type is missing even
- * though it is required to convert the established type of an outer frame
- * ("closure_type") into the established type of an inner frame (represented in
- * the return closure type of this handler's attr. */
-bool checkstart(upb_handlers *h, const upb_fielddef *f, upb_handlertype_t type,
-                upb_status *status) {
-  const void *closure_type;
-  const upb_handlerattr *attr;
-  const void *return_closure_type;
-
-  upb_selector_t sel = handlers_getsel(h, f, type);
-  if (h->table[sel].func) return true;
-  closure_type = effective_closure_type(h, f, type);
-  attr = &h->table[sel].attr;
-  return_closure_type = attr->return_closure_type;
-  if (closure_type && return_closure_type &&
-      closure_type != return_closure_type) {
-    return false;
-  }
-  return true;
-}
-
-static upb_handlers *upb_handlers_new(const upb_msgdef *md,
-                                      upb_handlercache *cache,
-                                      upb_arena *arena) {
-  int extra;
-  upb_handlers *h;
-
-  extra = sizeof(upb_handlers_tabent) * (upb_msgdef_selectorcount(md) - 1);
-  h = upb_calloc(arena, sizeof(*h) + extra);
-  if (!h) return NULL;
-
-  h->cache = cache;
-  h->msg = md;
-
-  if (upb_msgdef_submsgfieldcount(md) > 0) {
-    size_t bytes = upb_msgdef_submsgfieldcount(md) * sizeof(*h->sub);
-    h->sub = upb_calloc(arena, bytes);
-    if (!h->sub) return NULL;
-  } else {
-    h->sub = 0;
-  }
-
-  /* calloc() above initialized all handlers to NULL. */
-  return h;
-}
-
-/* Public interface ***********************************************************/
-
-#define SETTER(name, handlerctype, handlertype)                       \
-  bool upb_handlers_set##name(upb_handlers *h, const upb_fielddef *f, \
-                              handlerctype func,                      \
-                              const upb_handlerattr *attr) {          \
-    int32_t sel = trygetsel(h, f, handlertype);                       \
-    return doset(h, sel, f, handlertype, (upb_func *)func, attr);     \
-  }
-
-SETTER(int32,       upb_int32_handlerfunc*,       UPB_HANDLER_INT32)
-SETTER(int64,       upb_int64_handlerfunc*,       UPB_HANDLER_INT64)
-SETTER(uint32,      upb_uint32_handlerfunc*,      UPB_HANDLER_UINT32)
-SETTER(uint64,      upb_uint64_handlerfunc*,      UPB_HANDLER_UINT64)
-SETTER(float,       upb_float_handlerfunc*,       UPB_HANDLER_FLOAT)
-SETTER(double,      upb_double_handlerfunc*,      UPB_HANDLER_DOUBLE)
-SETTER(bool,        upb_bool_handlerfunc*,        UPB_HANDLER_BOOL)
-SETTER(startstr,    upb_startstr_handlerfunc*,    UPB_HANDLER_STARTSTR)
-SETTER(string,      upb_string_handlerfunc*,      UPB_HANDLER_STRING)
-SETTER(endstr,      upb_endfield_handlerfunc*,    UPB_HANDLER_ENDSTR)
-SETTER(startseq,    upb_startfield_handlerfunc*,  UPB_HANDLER_STARTSEQ)
-SETTER(startsubmsg, upb_startfield_handlerfunc*,  UPB_HANDLER_STARTSUBMSG)
-SETTER(endsubmsg,   upb_endfield_handlerfunc*,    UPB_HANDLER_ENDSUBMSG)
-SETTER(endseq,      upb_endfield_handlerfunc*,    UPB_HANDLER_ENDSEQ)
-
-#undef SETTER
-
-bool upb_handlers_setunknown(upb_handlers *h, upb_unknown_handlerfunc *func,
-                             const upb_handlerattr *attr) {
-  return doset(h, UPB_UNKNOWN_SELECTOR, NULL, UPB_HANDLER_INT32,
-               (upb_func *)func, attr);
-}
-
-bool upb_handlers_setstartmsg(upb_handlers *h, upb_startmsg_handlerfunc *func,
-                              const upb_handlerattr *attr) {
-  return doset(h, UPB_STARTMSG_SELECTOR, NULL, UPB_HANDLER_INT32,
-               (upb_func *)func, attr);
-}
-
-bool upb_handlers_setendmsg(upb_handlers *h, upb_endmsg_handlerfunc *func,
-                            const upb_handlerattr *attr) {
-  return doset(h, UPB_ENDMSG_SELECTOR, NULL, UPB_HANDLER_INT32,
-               (upb_func *)func, attr);
-}
-
-bool upb_handlers_setsubhandlers(upb_handlers *h, const upb_fielddef *f,
-                                 const upb_handlers *sub) {
-  UPB_ASSERT(sub);
-  UPB_ASSERT(upb_fielddef_issubmsg(f));
-  if (SUBH_F(h, f)) return false;  /* Can't reset. */
-  if (upb_handlers_msgdef(sub) != upb_fielddef_msgsubdef(f)) {
-    return false;
-  }
-  SUBH_F(h, f) = sub;
-  return true;
-}
-
-const upb_handlers *upb_handlers_getsubhandlers(const upb_handlers *h,
-                                                const upb_fielddef *f) {
-  UPB_ASSERT(upb_fielddef_issubmsg(f));
-  return SUBH_F(h, f);
-}
-
-upb_func *upb_handlers_gethandler(const upb_handlers *h, upb_selector_t s,
-                                  const void **handler_data) {
-  upb_func *ret = (upb_func *)h->table[s].func;
-  if (ret && handler_data) {
-    *handler_data = h->table[s].attr.handler_data;
-  }
-  return ret;
-}
-
-bool upb_handlers_getattr(const upb_handlers *h, upb_selector_t sel,
-                          upb_handlerattr *attr) {
-  if (!upb_handlers_gethandler(h, sel, NULL))
-    return false;
-  *attr = h->table[sel].attr;
-  return true;
-}
-
-const upb_handlers *upb_handlers_getsubhandlers_sel(const upb_handlers *h,
-                                                    upb_selector_t sel) {
-  /* STARTSUBMSG selector in sel is the field's selector base. */
-  return SUBH(h, sel - UPB_STATIC_SELECTOR_COUNT);
-}
-
-const upb_msgdef *upb_handlers_msgdef(const upb_handlers *h) { return h->msg; }
-
-bool upb_handlers_addcleanup(upb_handlers *h, void *p, upb_handlerfree *func) {
-  return upb_handlercache_addcleanup(h->cache, p, func);
-}
-
-upb_handlertype_t upb_handlers_getprimitivehandlertype(const upb_fielddef *f) {
-  switch (upb_fielddef_type(f)) {
-    case UPB_TYPE_INT32:
-    case UPB_TYPE_ENUM: return UPB_HANDLER_INT32;
-    case UPB_TYPE_INT64: return UPB_HANDLER_INT64;
-    case UPB_TYPE_UINT32: return UPB_HANDLER_UINT32;
-    case UPB_TYPE_UINT64: return UPB_HANDLER_UINT64;
-    case UPB_TYPE_FLOAT: return UPB_HANDLER_FLOAT;
-    case UPB_TYPE_DOUBLE: return UPB_HANDLER_DOUBLE;
-    case UPB_TYPE_BOOL: return UPB_HANDLER_BOOL;
-    default: UPB_ASSERT(false); return -1;  /* Invalid input. */
-  }
-}
-
-bool upb_handlers_getselector(const upb_fielddef *f, upb_handlertype_t type,
-                              upb_selector_t *s) {
-  uint32_t selector_base = upb_fielddef_selectorbase(f);
-  switch (type) {
-    case UPB_HANDLER_INT32:
-    case UPB_HANDLER_INT64:
-    case UPB_HANDLER_UINT32:
-    case UPB_HANDLER_UINT64:
-    case UPB_HANDLER_FLOAT:
-    case UPB_HANDLER_DOUBLE:
-    case UPB_HANDLER_BOOL:
-      if (!upb_fielddef_isprimitive(f) ||
-          upb_handlers_getprimitivehandlertype(f) != type)
-        return false;
-      *s = selector_base;
-      break;
-    case UPB_HANDLER_STRING:
-      if (upb_fielddef_isstring(f)) {
-        *s = selector_base;
-      } else if (upb_fielddef_lazy(f)) {
-        *s = selector_base + 3;
-      } else {
-        return false;
-      }
-      break;
-    case UPB_HANDLER_STARTSTR:
-      if (upb_fielddef_isstring(f) || upb_fielddef_lazy(f)) {
-        *s = selector_base + 1;
-      } else {
-        return false;
-      }
-      break;
-    case UPB_HANDLER_ENDSTR:
-      if (upb_fielddef_isstring(f) || upb_fielddef_lazy(f)) {
-        *s = selector_base + 2;
-      } else {
-        return false;
-      }
-      break;
-    case UPB_HANDLER_STARTSEQ:
-      if (!upb_fielddef_isseq(f)) return false;
-      *s = selector_base - 2;
-      break;
-    case UPB_HANDLER_ENDSEQ:
-      if (!upb_fielddef_isseq(f)) return false;
-      *s = selector_base - 1;
-      break;
-    case UPB_HANDLER_STARTSUBMSG:
-      if (!upb_fielddef_issubmsg(f)) return false;
-      /* Selectors for STARTSUBMSG are at the beginning of the table so that the
-       * selector can also be used as an index into the "sub" array of
-       * subhandlers.  The indexes for the two into these two tables are the
-       * same, except that in the handler table the static selectors come first. */
-      *s = upb_fielddef_index(f) + UPB_STATIC_SELECTOR_COUNT;
-      break;
-    case UPB_HANDLER_ENDSUBMSG:
-      if (!upb_fielddef_issubmsg(f)) return false;
-      *s = selector_base;
-      break;
-  }
-  UPB_ASSERT((size_t)*s < upb_msgdef_selectorcount(upb_fielddef_containingtype(f)));
-  return true;
-}
-
-/* upb_handlercache ***********************************************************/
-
-struct upb_handlercache {
-  upb_arena *arena;
-  upb_inttable tab;  /* maps upb_msgdef* -> upb_handlers*. */
-  upb_handlers_callback *callback;
-  const void *closure;
+/* Strings/bytes are special-cased in maps. */
+static char _upb_fieldtype_to_mapsize[12] = {
+  0,
+  1,  /* UPB_TYPE_BOOL */
+  4,  /* UPB_TYPE_FLOAT */
+  4,  /* UPB_TYPE_INT32 */
+  4,  /* UPB_TYPE_UINT32 */
+  4,  /* UPB_TYPE_ENUM */
+  sizeof(void*),  /* UPB_TYPE_MESSAGE */
+  8,  /* UPB_TYPE_DOUBLE */
+  8,  /* UPB_TYPE_INT64 */
+  8,  /* UPB_TYPE_UINT64 */
+  0,  /* UPB_TYPE_STRING */
+  0,  /* UPB_TYPE_BYTES */
 };
 
-const upb_handlers *upb_handlercache_get(upb_handlercache *c,
-                                         const upb_msgdef *md) {
-  upb_msg_field_iter i;
-  upb_value v;
-  upb_handlers *h;
+/** upb_msg *******************************************************************/
 
-  if (upb_inttable_lookupptr(&c->tab, md, &v)) {
-    return upb_value_getptr(v);
-  }
-
-  h = upb_handlers_new(md, c, c->arena);
-  v = upb_value_ptr(h);
-
-  if (!h) return NULL;
-  if (!upb_inttable_insertptr(&c->tab, md, v)) return NULL;
-
-  c->callback(c->closure, h);
-
-  /* For each submessage field, get or create a handlers object and set it as
-   * the subhandlers. */
-  for(upb_msg_field_begin(&i, md);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    upb_fielddef *f = upb_msg_iter_field(&i);
-
-    if (upb_fielddef_issubmsg(f)) {
-      const upb_msgdef *subdef = upb_fielddef_msgsubdef(f);
-      const upb_handlers *sub_mh = upb_handlercache_get(c, subdef);
-
-      if (!sub_mh) return NULL;
-
-      upb_handlers_setsubhandlers(h, f, sub_mh);
-    }
-  }
-
-  return h;
-}
-
-
-upb_handlercache *upb_handlercache_new(upb_handlers_callback *callback,
-                                       const void *closure) {
-  upb_handlercache *cache = upb_gmalloc(sizeof(*cache));
-
-  if (!cache) return NULL;
-
-  cache->arena = upb_arena_new();
-
-  cache->callback = callback;
-  cache->closure = closure;
-
-  if (!upb_inttable_init(&cache->tab, UPB_CTYPE_PTR)) goto oom;
-
-  return cache;
-
-oom:
-  upb_gfree(cache);
-  return NULL;
-}
-
-void upb_handlercache_free(upb_handlercache *cache) {
-  upb_inttable_uninit(&cache->tab);
-  upb_arena_free(cache->arena);
-  upb_gfree(cache);
-}
-
-bool upb_handlercache_addcleanup(upb_handlercache *c, void *p,
-                                 upb_handlerfree *func) {
-  return upb_arena_addcleanup(c->arena, p, func);
-}
-
-/* upb_byteshandler ***********************************************************/
-
-bool upb_byteshandler_setstartstr(upb_byteshandler *h,
-                                  upb_startstr_handlerfunc *func, void *d) {
-  h->table[UPB_STARTSTR_SELECTOR].func = (upb_func*)func;
-  h->table[UPB_STARTSTR_SELECTOR].attr.handler_data = d;
-  return true;
-}
-
-bool upb_byteshandler_setstring(upb_byteshandler *h,
-                                upb_string_handlerfunc *func, void *d) {
-  h->table[UPB_STRING_SELECTOR].func = (upb_func*)func;
-  h->table[UPB_STRING_SELECTOR].attr.handler_data = d;
-  return true;
-}
-
-bool upb_byteshandler_setendstr(upb_byteshandler *h,
-                                upb_endfield_handlerfunc *func, void *d) {
-  h->table[UPB_ENDSTR_SELECTOR].func = (upb_func*)func;
-  h->table[UPB_ENDSTR_SELECTOR].attr.handler_data = d;
-  return true;
-}
-
-/** Handlers for upb_msg ******************************************************/
-
-typedef struct {
-  size_t offset;
-  int32_t hasbit;
-} upb_msg_handlerdata;
-
-/* Fallback implementation if the handler is not specialized by the producer. */
-#define MSG_WRITER(type, ctype)                                               \
-  bool upb_msg_set ## type (void *c, const void *hd, ctype val) {             \
-    uint8_t *m = c;                                                           \
-    const upb_msg_handlerdata *d = hd;                                        \
-    if (d->hasbit > 0)                                                        \
-      *(uint8_t*)&m[d->hasbit / 8] |= 1 << (d->hasbit % 8);                   \
-    *(ctype*)&m[d->offset] = val;                                             \
-    return true;                                                              \
-  }                                                                           \
-
-MSG_WRITER(double, double)
-MSG_WRITER(float,  float)
-MSG_WRITER(int32,  int32_t)
-MSG_WRITER(int64,  int64_t)
-MSG_WRITER(uint32, uint32_t)
-MSG_WRITER(uint64, uint64_t)
-MSG_WRITER(bool,   bool)
-
-bool upb_msg_setscalarhandler(upb_handlers *h, const upb_fielddef *f,
-                              size_t offset, int32_t hasbit) {
-  upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-  bool ok;
-
-  upb_msg_handlerdata *d = upb_gmalloc(sizeof(*d));
-  if (!d) return false;
-  d->offset = offset;
-  d->hasbit = hasbit;
-
-  attr.handler_data = d;
-  attr.alwaysok = true;
-  upb_handlers_addcleanup(h, d, upb_gfree);
-
-#define TYPE(u, l) \
-  case UPB_TYPE_##u: \
-    ok = upb_handlers_set##l(h, f, upb_msg_set##l, &attr); break;
-
-  ok = false;
-
-  switch (upb_fielddef_type(f)) {
-    TYPE(INT64,  int64);
-    TYPE(INT32,  int32);
-    TYPE(ENUM,   int32);
-    TYPE(UINT64, uint64);
-    TYPE(UINT32, uint32);
-    TYPE(DOUBLE, double);
-    TYPE(FLOAT,  float);
-    TYPE(BOOL,   bool);
-    default: UPB_ASSERT(false); break;
-  }
-#undef TYPE
-
-  return ok;
-}
-
-bool upb_msg_getscalarhandlerdata(const upb_handlers *h,
-                                  upb_selector_t s,
-                                  upb_fieldtype_t *type,
-                                  size_t *offset,
-                                  int32_t *hasbit) {
-  const upb_msg_handlerdata *d;
-  const void *p;
-  upb_func *f = upb_handlers_gethandler(h, s, &p);
-
-  if ((upb_int64_handlerfunc*)f == upb_msg_setint64) {
-    *type = UPB_TYPE_INT64;
-  } else if ((upb_int32_handlerfunc*)f == upb_msg_setint32) {
-    *type = UPB_TYPE_INT32;
-  } else if ((upb_uint64_handlerfunc*)f == upb_msg_setuint64) {
-    *type = UPB_TYPE_UINT64;
-  } else if ((upb_uint32_handlerfunc*)f == upb_msg_setuint32) {
-    *type = UPB_TYPE_UINT32;
-  } else if ((upb_double_handlerfunc*)f == upb_msg_setdouble) {
-    *type = UPB_TYPE_DOUBLE;
-  } else if ((upb_float_handlerfunc*)f == upb_msg_setfloat) {
-    *type = UPB_TYPE_FLOAT;
-  } else if ((upb_bool_handlerfunc*)f == upb_msg_setbool) {
-    *type = UPB_TYPE_BOOL;
-  } else {
-    return false;
-  }
-
-  d = p;
-  *offset = d->offset;
-  *hasbit = d->hasbit;
-  return true;
-}
-
-
-bool upb_bufsrc_putbuf(const char *buf, size_t len, upb_bytessink sink) {
-  void *subc;
-  bool ret;
-  upb_bufhandle handle = UPB_BUFHANDLE_INIT;
-  handle.buf = buf;
-  ret = upb_bytessink_start(sink, len, &subc);
-  if (ret && len != 0) {
-    ret = (upb_bytessink_putbuf(sink, subc, buf, len, &handle) >= len);
-  }
-  if (ret) {
-    ret = upb_bytessink_end(sink);
-  }
-  return ret;
-}
-/*
-** protobuf decoder bytecode compiler
-**
-** Code to compile a upb::Handlers into bytecode for decoding a protobuf
-** according to that specific schema and destination handlers.
-**
-** Bytecode definition is in decoder.int.h.
-*/
-
-#include <stdarg.h>
-
-#ifdef UPB_DUMP_BYTECODE
-#include <stdio.h>
-#endif
-
-
-#define MAXLABEL 5
-#define EMPTYLABEL -1
-
-/* upb_pbdecodermethod ********************************************************/
-
-static void freemethod(upb_pbdecodermethod *method) {
-  upb_inttable_uninit(&method->dispatch);
-  upb_gfree(method);
-}
-
-static upb_pbdecodermethod *newmethod(const upb_handlers *dest_handlers,
-                                      mgroup *group) {
-  upb_pbdecodermethod *ret = upb_gmalloc(sizeof(*ret));
-  upb_byteshandler_init(&ret->input_handler_);
-
-  ret->group = group;
-  ret->dest_handlers_ = dest_handlers;
-  upb_inttable_init(&ret->dispatch, UPB_CTYPE_UINT64);
-
-  return ret;
-}
-
-const upb_handlers *upb_pbdecodermethod_desthandlers(
-    const upb_pbdecodermethod *m) {
-  return m->dest_handlers_;
-}
-
-const upb_byteshandler *upb_pbdecodermethod_inputhandler(
-    const upb_pbdecodermethod *m) {
-  return &m->input_handler_;
-}
-
-bool upb_pbdecodermethod_isnative(const upb_pbdecodermethod *m) {
-  return m->is_native_;
-}
-
-
-/* mgroup *********************************************************************/
-
-static void freegroup(mgroup *g) {
-  upb_inttable_iter i;
-
-  upb_inttable_begin(&i, &g->methods);
-  for(; !upb_inttable_done(&i); upb_inttable_next(&i)) {
-    freemethod(upb_value_getptr(upb_inttable_iter_value(&i)));
-  }
-
-  upb_inttable_uninit(&g->methods);
-  upb_gfree(g->bytecode);
-  upb_gfree(g);
-}
-
-mgroup *newgroup(void) {
-  mgroup *g = upb_gmalloc(sizeof(*g));
-  upb_inttable_init(&g->methods, UPB_CTYPE_PTR);
-  g->bytecode = NULL;
-  g->bytecode_end = NULL;
-  return g;
-}
-
-
-/* bytecode compiler **********************************************************/
-
-/* Data used only at compilation time. */
-typedef struct {
-  mgroup *group;
-
-  uint32_t *pc;
-  int fwd_labels[MAXLABEL];
-  int back_labels[MAXLABEL];
-
-  /* For fields marked "lazy", parse them lazily or eagerly? */
-  bool lazy;
-} compiler;
-
-static compiler *newcompiler(mgroup *group, bool lazy) {
-  compiler *ret = upb_gmalloc(sizeof(*ret));
-  int i;
-
-  ret->group = group;
-  ret->lazy = lazy;
-  for (i = 0; i < MAXLABEL; i++) {
-    ret->fwd_labels[i] = EMPTYLABEL;
-    ret->back_labels[i] = EMPTYLABEL;
-  }
-  return ret;
-}
-
-static void freecompiler(compiler *c) {
-  upb_gfree(c);
-}
-
-const size_t ptr_words = sizeof(void*) / sizeof(uint32_t);
-
-/* How many words an instruction is. */
-static int instruction_len(uint32_t instr) {
-  switch (getop(instr)) {
-    case OP_SETDISPATCH: return 1 + ptr_words;
-    case OP_TAGN: return 3;
-    case OP_SETBIGGROUPNUM: return 2;
-    default: return 1;
-  }
-}
-
-bool op_has_longofs(int32_t instruction) {
-  switch (getop(instruction)) {
-    case OP_CALL:
-    case OP_BRANCH:
-    case OP_CHECKDELIM:
-      return true;
-    /* The "tag" instructions only have 8 bytes available for the jump target,
-     * but that is ok because these opcodes only require short jumps. */
-    case OP_TAG1:
-    case OP_TAG2:
-    case OP_TAGN:
-      return false;
-    default:
-      UPB_ASSERT(false);
-      return false;
-  }
-}
-
-static int32_t getofs(uint32_t instruction) {
-  if (op_has_longofs(instruction)) {
-    return (int32_t)instruction >> 8;
-  } else {
-    return (int8_t)(instruction >> 8);
-  }
-}
-
-static void setofs(uint32_t *instruction, int32_t ofs) {
-  if (op_has_longofs(*instruction)) {
-    *instruction = getop(*instruction) | (uint32_t)ofs << 8;
-  } else {
-    *instruction = (*instruction & ~0xff00) | ((ofs & 0xff) << 8);
-  }
-  UPB_ASSERT(getofs(*instruction) == ofs);  /* Would fail in cases of overflow. */
-}
-
-static uint32_t pcofs(compiler *c) { return c->pc - c->group->bytecode; }
-
-/* Defines a local label at the current PC location.  All previous forward
- * references are updated to point to this location.  The location is noted
- * for any future backward references. */
-static void label(compiler *c, unsigned int label) {
-  int val;
-  uint32_t *codep;
-
-  UPB_ASSERT(label < MAXLABEL);
-  val = c->fwd_labels[label];
-  codep = (val == EMPTYLABEL) ? NULL : c->group->bytecode + val;
-  while (codep) {
-    int ofs = getofs(*codep);
-    setofs(codep, c->pc - codep - instruction_len(*codep));
-    codep = ofs ? codep + ofs : NULL;
-  }
-  c->fwd_labels[label] = EMPTYLABEL;
-  c->back_labels[label] = pcofs(c);
-}
-
-/* Creates a reference to a numbered label; either a forward reference
- * (positive arg) or backward reference (negative arg).  For forward references
- * the value returned now is actually a "next" pointer into a linked list of all
- * instructions that use this label and will be patched later when the label is
- * defined with label().
- *
- * The returned value is the offset that should be written into the instruction.
+/* If we always read/write as a consistent type to each address, this shouldn't
+ * violate aliasing.
  */
-static int32_t labelref(compiler *c, int label) {
-  UPB_ASSERT(label < MAXLABEL);
-  if (label == LABEL_DISPATCH) {
-    /* No resolving required. */
-    return 0;
-  } else if (label < 0) {
-    /* Backward local label.  Relative to the next instruction. */
-    uint32_t from = (c->pc + 1) - c->group->bytecode;
-    return c->back_labels[-label] - from;
+#define PTR_AT(msg, ofs, type) (type*)((char*)msg + ofs)
+
+upb_msg *upb_msg_new(const upb_msgdef *m, upb_arena *a) {
+  return _upb_msg_new(upb_msgdef_layout(m), a);
+}
+
+static bool in_oneof(const upb_msglayout_field *field) {
+  return field->presence < 0;
+}
+
+static uint32_t *oneofcase(const upb_msg *msg,
+                           const upb_msglayout_field *field) {
+  UPB_ASSERT(in_oneof(field));
+  return PTR_AT(msg, ~field->presence, uint32_t);
+}
+
+static upb_msgval _upb_msg_getraw(const upb_msg *msg, const upb_fielddef *f) {
+  const upb_msglayout_field *field = upb_fielddef_layout(f);
+  const char *mem = PTR_AT(msg, field->offset, char);
+  upb_msgval val = {0};
+  int size = upb_fielddef_isseq(f) ? sizeof(void *)
+                                   : field_size[field->descriptortype];
+  memcpy(&val, mem, size);
+  return val;
+}
+
+bool upb_msg_has(const upb_msg *msg, const upb_fielddef *f) {
+  const upb_msglayout_field *field = upb_fielddef_layout(f);
+  if (in_oneof(field)) {
+    return *oneofcase(msg, field) == field->number;
+  } else if (field->presence > 0) {
+    uint32_t hasbit = field->presence;
+    return *PTR_AT(msg, hasbit / 8, char) & (1 << (hasbit % 8));
   } else {
-    /* Forward local label: prepend to (possibly-empty) linked list. */
-    int *lptr = &c->fwd_labels[label];
-    int32_t ret = (*lptr == EMPTYLABEL) ? 0 : *lptr - pcofs(c);
-    *lptr = pcofs(c);
-    return ret;
+    UPB_ASSERT(field->descriptortype == UPB_DESCRIPTOR_TYPE_MESSAGE ||
+               field->descriptortype == UPB_DESCRIPTOR_TYPE_GROUP);
+    return _upb_msg_getraw(msg, f).msg_val != NULL;
   }
 }
 
-static void put32(compiler *c, uint32_t v) {
-  mgroup *g = c->group;
-  if (c->pc == g->bytecode_end) {
-    int ofs = pcofs(c);
-    size_t oldsize = g->bytecode_end - g->bytecode;
-    size_t newsize = UPB_MAX(oldsize * 2, 64);
-    /* TODO(haberman): handle OOM. */
-    g->bytecode = upb_grealloc(g->bytecode, oldsize * sizeof(uint32_t),
-                                            newsize * sizeof(uint32_t));
-    g->bytecode_end = g->bytecode + newsize;
-    c->pc = g->bytecode + ofs;
-  }
-  *c->pc++ = v;
+bool upb_msg_hasoneof(const upb_msg *msg, const upb_oneofdef *o) {
+  upb_oneof_iter i;
+  const upb_fielddef *f;
+  const upb_msglayout_field *field;
+
+  upb_oneof_begin(&i, o);
+  if (upb_oneof_done(&i)) return false;
+  f = upb_oneof_iter_field(&i);
+  field = upb_fielddef_layout(f);
+  return *oneofcase(msg, field) != 0;
 }
 
-static void putop(compiler *c, int op, ...) {
-  va_list ap;
-  va_start(ap, op);
-
-  switch (op) {
-    case OP_SETDISPATCH: {
-      uintptr_t ptr = (uintptr_t)va_arg(ap, void*);
-      put32(c, OP_SETDISPATCH);
-      put32(c, ptr);
-      if (sizeof(uintptr_t) > sizeof(uint32_t))
-        put32(c, (uint64_t)ptr >> 32);
-      break;
-    }
-    case OP_STARTMSG:
-    case OP_ENDMSG:
-    case OP_PUSHLENDELIM:
-    case OP_POP:
-    case OP_SETDELIM:
-    case OP_HALT:
-    case OP_RET:
-    case OP_DISPATCH:
-      put32(c, op);
-      break;
-    case OP_PARSE_DOUBLE:
-    case OP_PARSE_FLOAT:
-    case OP_PARSE_INT64:
-    case OP_PARSE_UINT64:
-    case OP_PARSE_INT32:
-    case OP_PARSE_FIXED64:
-    case OP_PARSE_FIXED32:
-    case OP_PARSE_BOOL:
-    case OP_PARSE_UINT32:
-    case OP_PARSE_SFIXED32:
-    case OP_PARSE_SFIXED64:
-    case OP_PARSE_SINT32:
-    case OP_PARSE_SINT64:
-    case OP_STARTSEQ:
-    case OP_ENDSEQ:
-    case OP_STARTSUBMSG:
-    case OP_ENDSUBMSG:
-    case OP_STARTSTR:
-    case OP_STRING:
-    case OP_ENDSTR:
-    case OP_PUSHTAGDELIM:
-      put32(c, op | va_arg(ap, upb_selector_t) << 8);
-      break;
-    case OP_SETBIGGROUPNUM:
-      put32(c, op);
-      put32(c, va_arg(ap, int));
-      break;
-    case OP_CALL: {
-      const upb_pbdecodermethod *method = va_arg(ap, upb_pbdecodermethod *);
-      put32(c, op | (method->code_base.ofs - (pcofs(c) + 1)) << 8);
-      break;
-    }
-    case OP_CHECKDELIM:
-    case OP_BRANCH: {
-      uint32_t instruction = op;
-      int label = va_arg(ap, int);
-      setofs(&instruction, labelref(c, label));
-      put32(c, instruction);
-      break;
-    }
-    case OP_TAG1:
-    case OP_TAG2: {
-      int label = va_arg(ap, int);
-      uint64_t tag = va_arg(ap, uint64_t);
-      uint32_t instruction = op | (tag << 16);
-      UPB_ASSERT(tag <= 0xffff);
-      setofs(&instruction, labelref(c, label));
-      put32(c, instruction);
-      break;
-    }
-    case OP_TAGN: {
-      int label = va_arg(ap, int);
-      uint64_t tag = va_arg(ap, uint64_t);
-      uint32_t instruction = op | (upb_value_size(tag) << 16);
-      setofs(&instruction, labelref(c, label));
-      put32(c, instruction);
-      put32(c, tag);
-      put32(c, tag >> 32);
-      break;
-    }
-  }
-
-  va_end(ap);
-}
-
-#if defined(UPB_DUMP_BYTECODE)
-
-const char *upb_pbdecoder_getopname(unsigned int op) {
-#define QUOTE(x) #x
-#define EXPAND_AND_QUOTE(x) QUOTE(x)
-#define OPNAME(x) OP_##x
-#define OP(x) case OPNAME(x): return EXPAND_AND_QUOTE(OPNAME(x));
-#define T(x) OP(PARSE_##x)
-  /* Keep in sync with list in decoder.int.h. */
-  switch ((opcode)op) {
-    T(DOUBLE) T(FLOAT) T(INT64) T(UINT64) T(INT32) T(FIXED64) T(FIXED32)
-    T(BOOL) T(UINT32) T(SFIXED32) T(SFIXED64) T(SINT32) T(SINT64)
-    OP(STARTMSG) OP(ENDMSG) OP(STARTSEQ) OP(ENDSEQ) OP(STARTSUBMSG)
-    OP(ENDSUBMSG) OP(STARTSTR) OP(STRING) OP(ENDSTR) OP(CALL) OP(RET)
-    OP(PUSHLENDELIM) OP(PUSHTAGDELIM) OP(SETDELIM) OP(CHECKDELIM)
-    OP(BRANCH) OP(TAG1) OP(TAG2) OP(TAGN) OP(SETDISPATCH) OP(POP)
-    OP(SETBIGGROUPNUM) OP(DISPATCH) OP(HALT)
-  }
-  return "<unknown op>";
-#undef OP
-#undef T
-}
-
-#endif
-
-#ifdef UPB_DUMP_BYTECODE
-
-static void dumpbc(uint32_t *p, uint32_t *end, FILE *f) {
-
-  uint32_t *begin = p;
-
-  while (p < end) {
-    fprintf(f, "%p  %8tx", p, p - begin);
-    uint32_t instr = *p++;
-    uint8_t op = getop(instr);
-    fprintf(f, " %s", upb_pbdecoder_getopname(op));
-    switch ((opcode)op) {
-      case OP_SETDISPATCH: {
-        const upb_inttable *dispatch;
-        memcpy(&dispatch, p, sizeof(void*));
-        p += ptr_words;
-        const upb_pbdecodermethod *method =
-            (void *)((char *)dispatch -
-                     offsetof(upb_pbdecodermethod, dispatch));
-        fprintf(f, " %s", upb_msgdef_fullname(
-                              upb_handlers_msgdef(method->dest_handlers_)));
-        break;
-      }
-      case OP_DISPATCH:
-      case OP_STARTMSG:
-      case OP_ENDMSG:
-      case OP_PUSHLENDELIM:
-      case OP_POP:
-      case OP_SETDELIM:
-      case OP_HALT:
-      case OP_RET:
-        break;
-      case OP_PARSE_DOUBLE:
-      case OP_PARSE_FLOAT:
-      case OP_PARSE_INT64:
-      case OP_PARSE_UINT64:
-      case OP_PARSE_INT32:
-      case OP_PARSE_FIXED64:
-      case OP_PARSE_FIXED32:
-      case OP_PARSE_BOOL:
-      case OP_PARSE_UINT32:
-      case OP_PARSE_SFIXED32:
-      case OP_PARSE_SFIXED64:
-      case OP_PARSE_SINT32:
-      case OP_PARSE_SINT64:
-      case OP_STARTSEQ:
-      case OP_ENDSEQ:
-      case OP_STARTSUBMSG:
-      case OP_ENDSUBMSG:
-      case OP_STARTSTR:
-      case OP_STRING:
-      case OP_ENDSTR:
-      case OP_PUSHTAGDELIM:
-        fprintf(f, " %d", instr >> 8);
-        break;
-      case OP_SETBIGGROUPNUM:
-        fprintf(f, " %d", *p++);
-        break;
-      case OP_CHECKDELIM:
-      case OP_CALL:
-      case OP_BRANCH:
-        fprintf(f, " =>0x%tx", p + getofs(instr) - begin);
-        break;
-      case OP_TAG1:
-      case OP_TAG2: {
-        fprintf(f, " tag:0x%x", instr >> 16);
-        if (getofs(instr)) {
-          fprintf(f, " =>0x%tx", p + getofs(instr) - begin);
-        }
-        break;
-      }
-      case OP_TAGN: {
-        uint64_t tag = *p++;
-        tag |= (uint64_t)*p++ << 32;
-        fprintf(f, " tag:0x%llx", (long long)tag);
-        fprintf(f, " n:%d", instr >> 16);
-        if (getofs(instr)) {
-          fprintf(f, " =>0x%tx", p + getofs(instr) - begin);
-        }
-        break;
-      }
-    }
-    fputs("\n", f);
-  }
-}
-
-#endif
-
-static uint64_t get_encoded_tag(const upb_fielddef *f, int wire_type) {
-  uint32_t tag = (upb_fielddef_number(f) << 3) | wire_type;
-  uint64_t encoded_tag = upb_vencode32(tag);
-  /* No tag should be greater than 5 bytes. */
-  UPB_ASSERT(encoded_tag <= 0xffffffffff);
-  return encoded_tag;
-}
-
-static void putchecktag(compiler *c, const upb_fielddef *f,
-                        int wire_type, int dest) {
-  uint64_t tag = get_encoded_tag(f, wire_type);
-  switch (upb_value_size(tag)) {
-    case 1:
-      putop(c, OP_TAG1, dest, tag);
-      break;
-    case 2:
-      putop(c, OP_TAG2, dest, tag);
-      break;
-    default:
-      putop(c, OP_TAGN, dest, tag);
-      break;
-  }
-}
-
-static upb_selector_t getsel(const upb_fielddef *f, upb_handlertype_t type) {
-  upb_selector_t selector;
-  bool ok = upb_handlers_getselector(f, type, &selector);
-  UPB_ASSERT(ok);
-  return selector;
-}
-
-/* Takes an existing, primary dispatch table entry and repacks it with a
- * different alternate wire type.  Called when we are inserting a secondary
- * dispatch table entry for an alternate wire type. */
-static uint64_t repack(uint64_t dispatch, int new_wt2) {
-  uint64_t ofs;
-  uint8_t wt1;
-  uint8_t old_wt2;
-  upb_pbdecoder_unpackdispatch(dispatch, &ofs, &wt1, &old_wt2);
-  UPB_ASSERT(old_wt2 == NO_WIRE_TYPE);  /* wt2 should not be set yet. */
-  return upb_pbdecoder_packdispatch(ofs, wt1, new_wt2);
-}
-
-/* Marks the current bytecode position as the dispatch target for this message,
- * field, and wire type. */
-static void dispatchtarget(compiler *c, upb_pbdecodermethod *method,
-                           const upb_fielddef *f, int wire_type) {
-  /* Offset is relative to msg base. */
-  uint64_t ofs = pcofs(c) - method->code_base.ofs;
-  uint32_t fn = upb_fielddef_number(f);
-  upb_inttable *d = &method->dispatch;
-  upb_value v;
-  if (upb_inttable_remove(d, fn, &v)) {
-    /* TODO: prioritize based on packed setting in .proto file. */
-    uint64_t repacked = repack(upb_value_getuint64(v), wire_type);
-    upb_inttable_insert(d, fn, upb_value_uint64(repacked));
-    upb_inttable_insert(d, fn + UPB_MAX_FIELDNUMBER, upb_value_uint64(ofs));
+upb_msgval upb_msg_get(const upb_msg *msg, const upb_fielddef *f) {
+  if (!upb_fielddef_haspresence(f) || upb_msg_has(msg, f)) {
+    return _upb_msg_getraw(msg, f);
   } else {
-    uint64_t val = upb_pbdecoder_packdispatch(ofs, wire_type, NO_WIRE_TYPE);
-    upb_inttable_insert(d, fn, upb_value_uint64(val));
-  }
-}
-
-static void putpush(compiler *c, const upb_fielddef *f) {
-  if (upb_fielddef_descriptortype(f) == UPB_DESCRIPTOR_TYPE_MESSAGE) {
-    putop(c, OP_PUSHLENDELIM);
-  } else {
-    uint32_t fn = upb_fielddef_number(f);
-    if (fn >= 1 << 24) {
-      putop(c, OP_PUSHTAGDELIM, 0);
-      putop(c, OP_SETBIGGROUPNUM, fn);
-    } else {
-      putop(c, OP_PUSHTAGDELIM, fn);
-    }
-  }
-}
-
-static upb_pbdecodermethod *find_submethod(const compiler *c,
-                                           const upb_pbdecodermethod *method,
-                                           const upb_fielddef *f) {
-  const upb_handlers *sub =
-      upb_handlers_getsubhandlers(method->dest_handlers_, f);
-  upb_value v;
-  return upb_inttable_lookupptr(&c->group->methods, sub, &v)
-             ? upb_value_getptr(v)
-             : NULL;
-}
-
-static void putsel(compiler *c, opcode op, upb_selector_t sel,
-                   const upb_handlers *h) {
-  if (upb_handlers_gethandler(h, sel, NULL)) {
-    putop(c, op, sel);
-  }
-}
-
-/* Puts an opcode to call a callback, but only if a callback actually exists for
- * this field and handler type. */
-static void maybeput(compiler *c, opcode op, const upb_handlers *h,
-                     const upb_fielddef *f, upb_handlertype_t type) {
-  putsel(c, op, getsel(f, type), h);
-}
-
-static bool haslazyhandlers(const upb_handlers *h, const upb_fielddef *f) {
-  if (!upb_fielddef_lazy(f))
-    return false;
-
-  return upb_handlers_gethandler(h, getsel(f, UPB_HANDLER_STARTSTR), NULL) ||
-         upb_handlers_gethandler(h, getsel(f, UPB_HANDLER_STRING), NULL) ||
-         upb_handlers_gethandler(h, getsel(f, UPB_HANDLER_ENDSTR), NULL);
-}
-
-
-/* bytecode compiler code generation ******************************************/
-
-/* Symbolic names for our local labels. */
-#define LABEL_LOOPSTART 1  /* Top of a repeated field loop. */
-#define LABEL_LOOPBREAK 2  /* To jump out of a repeated loop */
-#define LABEL_FIELD     3  /* Jump backward to find the most recent field. */
-#define LABEL_ENDMSG    4  /* To reach the OP_ENDMSG instr for this msg. */
-
-/* Generates bytecode to parse a single non-lazy message field. */
-static void generate_msgfield(compiler *c, const upb_fielddef *f,
-                              upb_pbdecodermethod *method) {
-  const upb_handlers *h = upb_pbdecodermethod_desthandlers(method);
-  const upb_pbdecodermethod *sub_m = find_submethod(c, method, f);
-  int wire_type;
-
-  if (!sub_m) {
-    /* Don't emit any code for this field at all; it will be parsed as an
-     * unknown field.
-     *
-     * TODO(haberman): we should change this to parse it as a string field
-     * instead.  It will probably be faster, but more importantly, once we
-     * start vending unknown fields, a field shouldn't be treated as unknown
-     * just because it doesn't have subhandlers registered. */
-    return;
-  }
-
-  label(c, LABEL_FIELD);
-
-  wire_type =
-      (upb_fielddef_descriptortype(f) == UPB_DESCRIPTOR_TYPE_MESSAGE)
-          ? UPB_WIRE_TYPE_DELIMITED
-          : UPB_WIRE_TYPE_START_GROUP;
-
-  if (upb_fielddef_isseq(f)) {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, wire_type, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, wire_type);
-    putop(c, OP_PUSHTAGDELIM, 0);
-    putop(c, OP_STARTSEQ, getsel(f, UPB_HANDLER_STARTSEQ));
-   label(c, LABEL_LOOPSTART);
-    putpush(c, f);
-    putop(c, OP_STARTSUBMSG, getsel(f, UPB_HANDLER_STARTSUBMSG));
-    putop(c, OP_CALL, sub_m);
-    putop(c, OP_POP);
-    maybeput(c, OP_ENDSUBMSG, h, f, UPB_HANDLER_ENDSUBMSG);
-    if (wire_type == UPB_WIRE_TYPE_DELIMITED) {
-      putop(c, OP_SETDELIM);
-    }
-    putop(c, OP_CHECKDELIM, LABEL_LOOPBREAK);
-    putchecktag(c, f, wire_type, LABEL_LOOPBREAK);
-    putop(c, OP_BRANCH, -LABEL_LOOPSTART);
-   label(c, LABEL_LOOPBREAK);
-    putop(c, OP_POP);
-    maybeput(c, OP_ENDSEQ, h, f, UPB_HANDLER_ENDSEQ);
-  } else {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, wire_type, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, wire_type);
-    putpush(c, f);
-    putop(c, OP_STARTSUBMSG, getsel(f, UPB_HANDLER_STARTSUBMSG));
-    putop(c, OP_CALL, sub_m);
-    putop(c, OP_POP);
-    maybeput(c, OP_ENDSUBMSG, h, f, UPB_HANDLER_ENDSUBMSG);
-    if (wire_type == UPB_WIRE_TYPE_DELIMITED) {
-      putop(c, OP_SETDELIM);
-    }
-  }
-}
-
-/* Generates bytecode to parse a single string or lazy submessage field. */
-static void generate_delimfield(compiler *c, const upb_fielddef *f,
-                                upb_pbdecodermethod *method) {
-  const upb_handlers *h = upb_pbdecodermethod_desthandlers(method);
-
-  label(c, LABEL_FIELD);
-  if (upb_fielddef_isseq(f)) {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, UPB_WIRE_TYPE_DELIMITED, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, UPB_WIRE_TYPE_DELIMITED);
-    putop(c, OP_PUSHTAGDELIM, 0);
-    putop(c, OP_STARTSEQ, getsel(f, UPB_HANDLER_STARTSEQ));
-   label(c, LABEL_LOOPSTART);
-    putop(c, OP_PUSHLENDELIM);
-    putop(c, OP_STARTSTR, getsel(f, UPB_HANDLER_STARTSTR));
-    /* Need to emit even if no handler to skip past the string. */
-    putop(c, OP_STRING, getsel(f, UPB_HANDLER_STRING));
-    maybeput(c, OP_ENDSTR, h, f, UPB_HANDLER_ENDSTR);
-    putop(c, OP_POP);
-    putop(c, OP_SETDELIM);
-    putop(c, OP_CHECKDELIM, LABEL_LOOPBREAK);
-    putchecktag(c, f, UPB_WIRE_TYPE_DELIMITED, LABEL_LOOPBREAK);
-    putop(c, OP_BRANCH, -LABEL_LOOPSTART);
-   label(c, LABEL_LOOPBREAK);
-    putop(c, OP_POP);
-    maybeput(c, OP_ENDSEQ, h, f, UPB_HANDLER_ENDSEQ);
-  } else {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, UPB_WIRE_TYPE_DELIMITED, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, UPB_WIRE_TYPE_DELIMITED);
-    putop(c, OP_PUSHLENDELIM);
-    putop(c, OP_STARTSTR, getsel(f, UPB_HANDLER_STARTSTR));
-    putop(c, OP_STRING, getsel(f, UPB_HANDLER_STRING));
-    maybeput(c, OP_ENDSTR, h, f, UPB_HANDLER_ENDSTR);
-    putop(c, OP_POP);
-    putop(c, OP_SETDELIM);
-  }
-}
-
-/* Generates bytecode to parse a single primitive field. */
-static void generate_primitivefield(compiler *c, const upb_fielddef *f,
-                                    upb_pbdecodermethod *method) {
-  const upb_handlers *h = upb_pbdecodermethod_desthandlers(method);
-  upb_descriptortype_t descriptor_type = upb_fielddef_descriptortype(f);
-  opcode parse_type;
-  upb_selector_t sel;
-  int wire_type;
-
-  label(c, LABEL_FIELD);
-
-  /* From a decoding perspective, ENUM is the same as INT32. */
-  if (descriptor_type == UPB_DESCRIPTOR_TYPE_ENUM)
-    descriptor_type = UPB_DESCRIPTOR_TYPE_INT32;
-
-  parse_type = (opcode)descriptor_type;
-
-  /* TODO(haberman): generate packed or non-packed first depending on "packed"
-   * setting in the fielddef.  This will favor (in speed) whichever was
-   * specified. */
-
-  UPB_ASSERT((int)parse_type >= 0 && parse_type <= OP_MAX);
-  sel = getsel(f, upb_handlers_getprimitivehandlertype(f));
-  wire_type = upb_pb_native_wire_types[upb_fielddef_descriptortype(f)];
-  if (upb_fielddef_isseq(f)) {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, UPB_WIRE_TYPE_DELIMITED, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, UPB_WIRE_TYPE_DELIMITED);
-    putop(c, OP_PUSHLENDELIM);
-    putop(c, OP_STARTSEQ, getsel(f, UPB_HANDLER_STARTSEQ));  /* Packed */
-   label(c, LABEL_LOOPSTART);
-    putop(c, parse_type, sel);
-    putop(c, OP_CHECKDELIM, LABEL_LOOPBREAK);
-    putop(c, OP_BRANCH, -LABEL_LOOPSTART);
-   dispatchtarget(c, method, f, wire_type);
-    putop(c, OP_PUSHTAGDELIM, 0);
-    putop(c, OP_STARTSEQ, getsel(f, UPB_HANDLER_STARTSEQ));  /* Non-packed */
-   label(c, LABEL_LOOPSTART);
-    putop(c, parse_type, sel);
-    putop(c, OP_CHECKDELIM, LABEL_LOOPBREAK);
-    putchecktag(c, f, wire_type, LABEL_LOOPBREAK);
-    putop(c, OP_BRANCH, -LABEL_LOOPSTART);
-   label(c, LABEL_LOOPBREAK);
-    putop(c, OP_POP);  /* Packed and non-packed join. */
-    maybeput(c, OP_ENDSEQ, h, f, UPB_HANDLER_ENDSEQ);
-    putop(c, OP_SETDELIM);  /* Could remove for non-packed by dup ENDSEQ. */
-  } else {
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    putchecktag(c, f, wire_type, LABEL_DISPATCH);
-   dispatchtarget(c, method, f, wire_type);
-    putop(c, parse_type, sel);
-  }
-}
-
-/* Adds bytecode for parsing the given message to the given decoderplan,
- * while adding all dispatch targets to this message's dispatch table. */
-static void compile_method(compiler *c, upb_pbdecodermethod *method) {
-  const upb_handlers *h;
-  const upb_msgdef *md;
-  uint32_t* start_pc;
-  upb_msg_field_iter i;
-  upb_value val;
-
-  UPB_ASSERT(method);
-
-  /* Clear all entries in the dispatch table. */
-  upb_inttable_uninit(&method->dispatch);
-  upb_inttable_init(&method->dispatch, UPB_CTYPE_UINT64);
-
-  h = upb_pbdecodermethod_desthandlers(method);
-  md = upb_handlers_msgdef(h);
-
- method->code_base.ofs = pcofs(c);
-  putop(c, OP_SETDISPATCH, &method->dispatch);
-  putsel(c, OP_STARTMSG, UPB_STARTMSG_SELECTOR, h);
- label(c, LABEL_FIELD);
-  start_pc = c->pc;
-  for(upb_msg_field_begin(&i, md);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
-    upb_fieldtype_t type = upb_fielddef_type(f);
-
-    if (type == UPB_TYPE_MESSAGE && !(haslazyhandlers(h, f) && c->lazy)) {
-      generate_msgfield(c, f, method);
-    } else if (type == UPB_TYPE_STRING || type == UPB_TYPE_BYTES ||
-               type == UPB_TYPE_MESSAGE) {
-      generate_delimfield(c, f, method);
-    } else {
-      generate_primitivefield(c, f, method);
-    }
-  }
-
-  /* If there were no fields, or if no handlers were defined, we need to
-   * generate a non-empty loop body so that we can at least dispatch for unknown
-   * fields and check for the end of the message. */
-  if (c->pc == start_pc) {
-    /* Check for end-of-message. */
-    putop(c, OP_CHECKDELIM, LABEL_ENDMSG);
-    /* Unconditionally dispatch. */
-    putop(c, OP_DISPATCH, 0);
-  }
-
-  /* For now we just loop back to the last field of the message (or if none,
-   * the DISPATCH opcode for the message). */
-  putop(c, OP_BRANCH, -LABEL_FIELD);
-
-  /* Insert both a label and a dispatch table entry for this end-of-msg. */
- label(c, LABEL_ENDMSG);
-  val = upb_value_uint64(pcofs(c) - method->code_base.ofs);
-  upb_inttable_insert(&method->dispatch, DISPATCH_ENDMSG, val);
-
-  putsel(c, OP_ENDMSG, UPB_ENDMSG_SELECTOR, h);
-  putop(c, OP_RET);
-
-  upb_inttable_compact(&method->dispatch);
-}
-
-/* Populate "methods" with new upb_pbdecodermethod objects reachable from "h".
- * Returns the method for these handlers.
- *
- * Generates a new method for every destination handlers reachable from "h". */
-static void find_methods(compiler *c, const upb_handlers *h) {
-  upb_value v;
-  upb_msg_field_iter i;
-  const upb_msgdef *md;
-  upb_pbdecodermethod *method;
-
-  if (upb_inttable_lookupptr(&c->group->methods, h, &v))
-    return;
-
-  method = newmethod(h, c->group);
-  upb_inttable_insertptr(&c->group->methods, h, upb_value_ptr(method));
-
-  /* Find submethods. */
-  md = upb_handlers_msgdef(h);
-  for(upb_msg_field_begin(&i, md);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
-    const upb_handlers *sub_h;
-    if (upb_fielddef_type(f) == UPB_TYPE_MESSAGE &&
-        (sub_h = upb_handlers_getsubhandlers(h, f)) != NULL) {
-      /* We only generate a decoder method for submessages with handlers.
-       * Others will be parsed as unknown fields. */
-      find_methods(c, sub_h);
-    }
-  }
-}
-
-/* (Re-)compile bytecode for all messages in "msgs."
- * Overwrites any existing bytecode in "c". */
-static void compile_methods(compiler *c) {
-  upb_inttable_iter i;
-
-  /* Start over at the beginning of the bytecode. */
-  c->pc = c->group->bytecode;
-
-  upb_inttable_begin(&i, &c->group->methods);
-  for(; !upb_inttable_done(&i); upb_inttable_next(&i)) {
-    upb_pbdecodermethod *method = upb_value_getptr(upb_inttable_iter_value(&i));
-    compile_method(c, method);
-  }
-}
-
-static void set_bytecode_handlers(mgroup *g) {
-  upb_inttable_iter i;
-  upb_inttable_begin(&i, &g->methods);
-  for(; !upb_inttable_done(&i); upb_inttable_next(&i)) {
-    upb_pbdecodermethod *m = upb_value_getptr(upb_inttable_iter_value(&i));
-    upb_byteshandler *h = &m->input_handler_;
-
-    m->code_base.ptr = g->bytecode + m->code_base.ofs;
-
-    upb_byteshandler_setstartstr(h, upb_pbdecoder_startbc, m->code_base.ptr);
-    upb_byteshandler_setstring(h, upb_pbdecoder_decode, g);
-    upb_byteshandler_setendstr(h, upb_pbdecoder_end, m);
-  }
-}
-
-
-/* TODO(haberman): allow this to be constructed for an arbitrary set of dest
- * handlers and other mgroups (but verify we have a transitive closure). */
-const mgroup *mgroup_new(const upb_handlers *dest, bool lazy) {
-  mgroup *g;
-  compiler *c;
-
-  g = newgroup();
-  c = newcompiler(g, lazy);
-  find_methods(c, dest);
-
-  /* We compile in two passes:
-   * 1. all messages are assigned relative offsets from the beginning of the
-   *    bytecode (saved in method->code_base).
-   * 2. forwards OP_CALL instructions can be correctly linked since message
-   *    offsets have been previously assigned.
-   *
-   * Could avoid the second pass by linking OP_CALL instructions somehow. */
-  compile_methods(c);
-  compile_methods(c);
-  g->bytecode_end = c->pc;
-  freecompiler(c);
-
-#ifdef UPB_DUMP_BYTECODE
-  {
-    FILE *f = fopen("/tmp/upb-bytecode", "w");
-    UPB_ASSERT(f);
-    dumpbc(g->bytecode, g->bytecode_end, stderr);
-    dumpbc(g->bytecode, g->bytecode_end, f);
-    fclose(f);
-
-    f = fopen("/tmp/upb-bytecode.bin", "wb");
-    UPB_ASSERT(f);
-    fwrite(g->bytecode, 1, g->bytecode_end - g->bytecode, f);
-    fclose(f);
-  }
-#endif
-
-  set_bytecode_handlers(g);
-  return g;
-}
-
-
-/* upb_pbcodecache ************************************************************/
-
-upb_pbcodecache *upb_pbcodecache_new(upb_handlercache *dest) {
-  upb_pbcodecache *c = upb_gmalloc(sizeof(*c));
-
-  if (!c) return NULL;
-
-  c->dest = dest;
-  c->lazy = false;
-
-  c->arena = upb_arena_new();
-  if (!upb_inttable_init(&c->groups, UPB_CTYPE_CONSTPTR)) return NULL;
-
-  return c;
-}
-
-void upb_pbcodecache_free(upb_pbcodecache *c) {
-  upb_inttable_iter i;
-
-  upb_inttable_begin(&i, &c->groups);
-  for(; !upb_inttable_done(&i); upb_inttable_next(&i)) {
-    upb_value val = upb_inttable_iter_value(&i);
-    freegroup((void*)upb_value_getconstptr(val));
-  }
-
-  upb_inttable_uninit(&c->groups);
-  upb_arena_free(c->arena);
-  upb_gfree(c);
-}
-
-void upb_pbdecodermethodopts_setlazy(upb_pbcodecache *c, bool lazy) {
-  UPB_ASSERT(upb_inttable_count(&c->groups) == 0);
-  c->lazy = lazy;
-}
-
-const upb_pbdecodermethod *upb_pbcodecache_get(upb_pbcodecache *c,
-                                               const upb_msgdef *md) {
-  upb_value v;
-  bool ok;
-  const upb_handlers *h;
-  const mgroup *g;
-
-  h = upb_handlercache_get(c->dest, md);
-  if (upb_inttable_lookupptr(&c->groups, md, &v)) {
-    g = upb_value_getconstptr(v);
-  } else {
-    g = mgroup_new(h, c->lazy);
-    ok = upb_inttable_insertptr(&c->groups, md, upb_value_constptr(g));
-    UPB_ASSERT(ok);
-  }
-
-  ok = upb_inttable_lookupptr(&g->methods, h, &v);
-  UPB_ASSERT(ok);
-  return upb_value_getptr(v);
-}
-/*
-** upb::Decoder (Bytecode Decoder VM)
-**
-** Bytecode must previously have been generated using the bytecode compiler in
-** compile_decoder.c.  This decoder then walks through the bytecode op-by-op to
-** parse the input.
-**
-** Decoding is fully resumable; we just keep a pointer to the current bytecode
-** instruction and resume from there.  A fair amount of the logic here is to
-** handle the fact that values can span buffer seams and we have to be able to
-** be capable of suspending/resuming from any byte in the stream.  This
-** sometimes requires keeping a few trailing bytes from the last buffer around
-** in the "residual" buffer.
-*/
-
-#include <inttypes.h>
-#include <stddef.h>
-
-#ifdef UPB_DUMP_BYTECODE
-#include <stdio.h>
-#endif
-
-
-#define CHECK_SUSPEND(x) if (!(x)) return upb_pbdecoder_suspend(d);
-
-/* Error messages that are shared between the bytecode and JIT decoders. */
-const char *kPbDecoderStackOverflow = "Nesting too deep.";
-const char *kPbDecoderSubmessageTooLong =
-    "Submessage end extends past enclosing submessage.";
-
-/* Error messages shared within this file. */
-static const char *kUnterminatedVarint = "Unterminated varint.";
-
-/* upb_pbdecoder **************************************************************/
-
-static opcode halt = OP_HALT;
-
-/* A dummy character we can point to when the user passes us a NULL buffer.
- * We need this because in C (NULL + 0) and (NULL - NULL) are undefined
- * behavior, which would invalidate functions like curbufleft(). */
-static const char dummy_char;
-
-/* Whether an op consumes any of the input buffer. */
-static bool consumes_input(opcode op) {
-  switch (op) {
-    case OP_SETDISPATCH:
-    case OP_STARTMSG:
-    case OP_ENDMSG:
-    case OP_STARTSEQ:
-    case OP_ENDSEQ:
-    case OP_STARTSUBMSG:
-    case OP_ENDSUBMSG:
-    case OP_STARTSTR:
-    case OP_ENDSTR:
-    case OP_PUSHTAGDELIM:
-    case OP_POP:
-    case OP_SETDELIM:
-    case OP_SETBIGGROUPNUM:
-    case OP_CHECKDELIM:
-    case OP_CALL:
-    case OP_RET:
-    case OP_BRANCH:
-      return false;
-    default:
-      return true;
-  }
-}
-
-static size_t stacksize(upb_pbdecoder *d, size_t entries) {
-  UPB_UNUSED(d);
-  return entries * sizeof(upb_pbdecoder_frame);
-}
-
-static size_t callstacksize(upb_pbdecoder *d, size_t entries) {
-  UPB_UNUSED(d);
-
-  return entries * sizeof(uint32_t*);
-}
-
-
-static bool in_residual_buf(const upb_pbdecoder *d, const char *p);
-
-/* It's unfortunate that we have to micro-manage the compiler with
- * UPB_FORCEINLINE and UPB_NOINLINE, especially since this tuning is necessarily
- * specific to one hardware configuration.  But empirically on a Core i7,
- * performance increases 30-50% with these annotations.  Every instance where
- * these appear, gcc 4.2.1 made the wrong decision and degraded performance in
- * benchmarks. */
-
-static void seterr(upb_pbdecoder *d, const char *msg) {
-  upb_status_seterrmsg(d->status, msg);
-}
-
-void upb_pbdecoder_seterr(upb_pbdecoder *d, const char *msg) {
-  seterr(d, msg);
-}
-
-
-/* Buffering ******************************************************************/
-
-/* We operate on one buffer at a time, which is either the user's buffer passed
- * to our "decode" callback or some residual bytes from the previous buffer. */
-
-/* How many bytes can be safely read from d->ptr without reading past end-of-buf
- * or past the current delimited end. */
-static size_t curbufleft(const upb_pbdecoder *d) {
-  UPB_ASSERT(d->data_end >= d->ptr);
-  return d->data_end - d->ptr;
-}
-
-/* How many bytes are available before end-of-buffer. */
-static size_t bufleft(const upb_pbdecoder *d) {
-  return d->end - d->ptr;
-}
-
-/* Overall stream offset of d->ptr. */
-uint64_t offset(const upb_pbdecoder *d) {
-  return d->bufstart_ofs + (d->ptr - d->buf);
-}
-
-/* How many bytes are available before the end of this delimited region. */
-size_t delim_remaining(const upb_pbdecoder *d) {
-  return d->top->end_ofs - offset(d);
-}
-
-/* Advances d->ptr. */
-static void advance(upb_pbdecoder *d, size_t len) {
-  UPB_ASSERT(curbufleft(d) >= len);
-  d->ptr += len;
-}
-
-static bool in_buf(const char *p, const char *buf, const char *end) {
-  return p >= buf && p <= end;
-}
-
-static bool in_residual_buf(const upb_pbdecoder *d, const char *p) {
-  return in_buf(p, d->residual, d->residual_end);
-}
-
-/* Calculates the delim_end value, which is affected by both the current buffer
- * and the parsing stack, so must be called whenever either is updated. */
-static void set_delim_end(upb_pbdecoder *d) {
-  size_t delim_ofs = d->top->end_ofs - d->bufstart_ofs;
-  if (delim_ofs <= (size_t)(d->end - d->buf)) {
-    d->delim_end = d->buf + delim_ofs;
-    d->data_end = d->delim_end;
-  } else {
-    d->data_end = d->end;
-    d->delim_end = NULL;
-  }
-}
-
-static void switchtobuf(upb_pbdecoder *d, const char *buf, const char *end) {
-  d->ptr = buf;
-  d->buf = buf;
-  d->end = end;
-  set_delim_end(d);
-}
-
-static void advancetobuf(upb_pbdecoder *d, const char *buf, size_t len) {
-  UPB_ASSERT(curbufleft(d) == 0);
-  d->bufstart_ofs += (d->end - d->buf);
-  switchtobuf(d, buf, buf + len);
-}
-
-static void checkpoint(upb_pbdecoder *d) {
-  /* The assertion here is in the interests of efficiency, not correctness.
-   * We are trying to ensure that we don't checkpoint() more often than
-   * necessary. */
-  UPB_ASSERT(d->checkpoint != d->ptr);
-  d->checkpoint = d->ptr;
-}
-
-/* Skips "bytes" bytes in the stream, which may be more than available.  If we
- * skip more bytes than are available, we return a long read count to the caller
- * indicating how many bytes can be skipped over before passing actual data
- * again.  Skipped bytes can pass a NULL buffer and the decoder guarantees they
- * won't actually be read.
- */
-static int32_t skip(upb_pbdecoder *d, size_t bytes) {
-  UPB_ASSERT(!in_residual_buf(d, d->ptr) || d->size_param == 0);
-  UPB_ASSERT(d->skip == 0);
-  if (bytes > delim_remaining(d)) {
-    seterr(d, "Skipped value extended beyond enclosing submessage.");
-    return upb_pbdecoder_suspend(d);
-  } else if (bufleft(d) >= bytes) {
-    /* Skipped data is all in current buffer, and more is still available. */
-    advance(d, bytes);
-    d->skip = 0;
-    return DECODE_OK;
-  } else {
-    /* Skipped data extends beyond currently available buffers. */
-    d->pc = d->last;
-    d->skip = bytes - curbufleft(d);
-    d->bufstart_ofs += (d->end - d->buf);
-    d->residual_end = d->residual;
-    switchtobuf(d, d->residual, d->residual_end);
-    return d->size_param + d->skip;
-  }
-}
-
-
-/* Resumes the decoder from an initial state or from a previous suspend. */
-int32_t upb_pbdecoder_resume(upb_pbdecoder *d, void *p, const char *buf,
-                             size_t size, const upb_bufhandle *handle) {
-  UPB_UNUSED(p);  /* Useless; just for the benefit of the JIT. */
-
-  /* d->skip and d->residual_end could probably elegantly be represented
-   * as a single variable, to more easily represent this invariant. */
-  UPB_ASSERT(!(d->skip && d->residual_end > d->residual));
-
-  /* We need to remember the original size_param, so that the value we return
-   * is relative to it, even if we do some skipping first. */
-  d->size_param = size;
-  d->handle = handle;
-
-  /* Have to handle this case specially (ie. not with skip()) because the user
-   * is allowed to pass a NULL buffer here, which won't allow us to safely
-   * calculate a d->end or use our normal functions like curbufleft(). */
-  if (d->skip && d->skip >= size) {
-    d->skip -= size;
-    d->bufstart_ofs += size;
-    buf = &dummy_char;
-    size = 0;
-
-    /* We can't just return now, because we might need to execute some ops
-     * like CHECKDELIM, which could call some callbacks and pop the stack. */
-  }
-
-  /* We need to pretend that this was the actual buffer param, since some of the
-   * calculations assume that d->ptr/d->buf is relative to this. */
-  d->buf_param = buf;
-
-  if (!buf) {
-    /* NULL buf is ok if its entire span is covered by the "skip" above, but
-     * by this point we know that "skip" doesn't cover the buffer. */
-    seterr(d, "Passed NULL buffer over non-skippable region.");
-    return upb_pbdecoder_suspend(d);
-  }
-
-  if (d->residual_end > d->residual) {
-    /* We have residual bytes from the last buffer. */
-    UPB_ASSERT(d->ptr == d->residual);
-  } else {
-    switchtobuf(d, buf, buf + size);
-  }
-
-  d->checkpoint = d->ptr;
-
-  /* Handle skips that don't cover the whole buffer (as above). */
-  if (d->skip) {
-    size_t skip_bytes = d->skip;
-    d->skip = 0;
-    CHECK_RETURN(skip(d, skip_bytes));
-    checkpoint(d);
-  }
-
-  /* If we're inside an unknown group, continue to parse unknown values. */
-  if (d->top->groupnum < 0) {
-    CHECK_RETURN(upb_pbdecoder_skipunknown(d, -1, 0));
-    checkpoint(d);
-  }
-
-  return DECODE_OK;
-}
-
-/* Suspends the decoder at the last checkpoint, without saving any residual
- * bytes.  If there are any unconsumed bytes, returns a short byte count. */
-size_t upb_pbdecoder_suspend(upb_pbdecoder *d) {
-  d->pc = d->last;
-  if (d->checkpoint == d->residual) {
-    /* Checkpoint was in residual buf; no user bytes were consumed. */
-    d->ptr = d->residual;
-    return 0;
-  } else {
-    size_t ret = d->size_param - (d->end - d->checkpoint);
-    UPB_ASSERT(!in_residual_buf(d, d->checkpoint));
-    UPB_ASSERT(d->buf == d->buf_param || d->buf == &dummy_char);
-
-    d->bufstart_ofs += (d->checkpoint - d->buf);
-    d->residual_end = d->residual;
-    switchtobuf(d, d->residual, d->residual_end);
-    return ret;
-  }
-}
-
-/* Suspends the decoder at the last checkpoint, and saves any unconsumed
- * bytes in our residual buffer.  This is necessary if we need more user
- * bytes to form a complete value, which might not be contiguous in the
- * user's buffers.  Always consumes all user bytes. */
-static size_t suspend_save(upb_pbdecoder *d) {
-  /* We hit end-of-buffer before we could parse a full value.
-   * Save any unconsumed bytes (if any) to the residual buffer. */
-  d->pc = d->last;
-
-  if (d->checkpoint == d->residual) {
-    /* Checkpoint was in residual buf; append user byte(s) to residual buf. */
-    UPB_ASSERT((d->residual_end - d->residual) + d->size_param <=
-           sizeof(d->residual));
-    if (!in_residual_buf(d, d->ptr)) {
-      d->bufstart_ofs -= (d->residual_end - d->residual);
-    }
-    memcpy(d->residual_end, d->buf_param, d->size_param);
-    d->residual_end += d->size_param;
-  } else {
-    /* Checkpoint was in user buf; old residual bytes not needed. */
-    size_t save;
-    UPB_ASSERT(!in_residual_buf(d, d->checkpoint));
-
-    d->ptr = d->checkpoint;
-    save = curbufleft(d);
-    UPB_ASSERT(save <= sizeof(d->residual));
-    memcpy(d->residual, d->ptr, save);
-    d->residual_end = d->residual + save;
-    d->bufstart_ofs = offset(d);
-  }
-
-  switchtobuf(d, d->residual, d->residual_end);
-  return d->size_param;
-}
-
-/* Copies the next "bytes" bytes into "buf" and advances the stream.
- * Requires that this many bytes are available in the current buffer. */
-UPB_FORCEINLINE static void consumebytes(upb_pbdecoder *d, void *buf,
-                                         size_t bytes) {
-  UPB_ASSERT(bytes <= curbufleft(d));
-  memcpy(buf, d->ptr, bytes);
-  advance(d, bytes);
-}
-
-/* Slow path for getting the next "bytes" bytes, regardless of whether they are
- * available in the current buffer or not.  Returns a status code as described
- * in decoder.int.h. */
-UPB_NOINLINE static int32_t getbytes_slow(upb_pbdecoder *d, void *buf,
-                                          size_t bytes) {
-  const size_t avail = curbufleft(d);
-  consumebytes(d, buf, avail);
-  bytes -= avail;
-  UPB_ASSERT(bytes > 0);
-  if (in_residual_buf(d, d->ptr)) {
-    advancetobuf(d, d->buf_param, d->size_param);
-  }
-  if (curbufleft(d) >= bytes) {
-    consumebytes(d, (char *)buf + avail, bytes);
-    return DECODE_OK;
-  } else if (d->data_end == d->delim_end) {
-    seterr(d, "Submessage ended in the middle of a value or group");
-    return upb_pbdecoder_suspend(d);
-  } else {
-    return suspend_save(d);
-  }
-}
-
-/* Gets the next "bytes" bytes, regardless of whether they are available in the
- * current buffer or not.  Returns a status code as described in decoder.int.h.
- */
-UPB_FORCEINLINE static int32_t getbytes(upb_pbdecoder *d, void *buf,
-                                        size_t bytes) {
-  if (curbufleft(d) >= bytes) {
-    /* Buffer has enough data to satisfy. */
-    consumebytes(d, buf, bytes);
-    return DECODE_OK;
-  } else {
-    return getbytes_slow(d, buf, bytes);
-  }
-}
-
-UPB_NOINLINE static size_t peekbytes_slow(upb_pbdecoder *d, void *buf,
-                                          size_t bytes) {
-  size_t ret = curbufleft(d);
-  memcpy(buf, d->ptr, ret);
-  if (in_residual_buf(d, d->ptr)) {
-    size_t copy = UPB_MIN(bytes - ret, d->size_param);
-    memcpy((char *)buf + ret, d->buf_param, copy);
-    ret += copy;
-  }
-  return ret;
-}
-
-UPB_FORCEINLINE static size_t peekbytes(upb_pbdecoder *d, void *buf,
-                                        size_t bytes) {
-  if (curbufleft(d) >= bytes) {
-    memcpy(buf, d->ptr, bytes);
-    return bytes;
-  } else {
-    return peekbytes_slow(d, buf, bytes);
-  }
-}
-
-
-/* Decoding of wire types *****************************************************/
-
-/* Slow path for decoding a varint from the current buffer position.
- * Returns a status code as described in decoder.int.h. */
-UPB_NOINLINE int32_t upb_pbdecoder_decode_varint_slow(upb_pbdecoder *d,
-                                                      uint64_t *u64) {
-  uint8_t byte = 0x80;
-  int bitpos;
-  *u64 = 0;
-  for(bitpos = 0; bitpos < 70 && (byte & 0x80); bitpos += 7) {
-    CHECK_RETURN(getbytes(d, &byte, 1));
-    *u64 |= (uint64_t)(byte & 0x7F) << bitpos;
-  }
-  if(bitpos == 70 && (byte & 0x80)) {
-    seterr(d, kUnterminatedVarint);
-    return upb_pbdecoder_suspend(d);
-  }
-  return DECODE_OK;
-}
-
-/* Decodes a varint from the current buffer position.
- * Returns a status code as described in decoder.int.h. */
-UPB_FORCEINLINE static int32_t decode_varint(upb_pbdecoder *d, uint64_t *u64) {
-  if (curbufleft(d) > 0 && !(*d->ptr & 0x80)) {
-    *u64 = *d->ptr;
-    advance(d, 1);
-    return DECODE_OK;
-  } else if (curbufleft(d) >= 10) {
-    /* Fast case. */
-    upb_decoderet r = upb_vdecode_fast(d->ptr);
-    if (r.p == NULL) {
-      seterr(d, kUnterminatedVarint);
-      return upb_pbdecoder_suspend(d);
-    }
-    advance(d, r.p - d->ptr);
-    *u64 = r.val;
-    return DECODE_OK;
-  } else {
-    /* Slow case -- varint spans buffer seam. */
-    return upb_pbdecoder_decode_varint_slow(d, u64);
-  }
-}
-
-/* Decodes a 32-bit varint from the current buffer position.
- * Returns a status code as described in decoder.int.h. */
-UPB_FORCEINLINE static int32_t decode_v32(upb_pbdecoder *d, uint32_t *u32) {
-  uint64_t u64;
-  int32_t ret = decode_varint(d, &u64);
-  if (ret >= 0) return ret;
-  if (u64 > UINT32_MAX) {
-    seterr(d, "Unterminated 32-bit varint");
-    /* TODO(haberman) guarantee that this function return is >= 0 somehow,
-     * so we know this path will always be treated as error by our caller.
-     * Right now the size_t -> int32_t can overflow and produce negative values.
-     */
-    *u32 = 0;
-    return upb_pbdecoder_suspend(d);
-  }
-  *u32 = u64;
-  return DECODE_OK;
-}
-
-/* Decodes a fixed32 from the current buffer position.
- * Returns a status code as described in decoder.int.h.
- * TODO: proper byte swapping for big-endian machines. */
-UPB_FORCEINLINE static int32_t decode_fixed32(upb_pbdecoder *d, uint32_t *u32) {
-  return getbytes(d, u32, 4);
-}
-
-/* Decodes a fixed64 from the current buffer position.
- * Returns a status code as described in decoder.int.h.
- * TODO: proper byte swapping for big-endian machines. */
-UPB_FORCEINLINE static int32_t decode_fixed64(upb_pbdecoder *d, uint64_t *u64) {
-  return getbytes(d, u64, 8);
-}
-
-/* Non-static versions of the above functions.
- * These are called by the JIT for fallback paths. */
-int32_t upb_pbdecoder_decode_f32(upb_pbdecoder *d, uint32_t *u32) {
-  return decode_fixed32(d, u32);
-}
-
-int32_t upb_pbdecoder_decode_f64(upb_pbdecoder *d, uint64_t *u64) {
-  return decode_fixed64(d, u64);
-}
-
-static double as_double(uint64_t n) { double d; memcpy(&d, &n, 8); return d; }
-static float  as_float(uint32_t n)  { float  f; memcpy(&f, &n, 4); return f; }
-
-/* Pushes a frame onto the decoder stack. */
-static bool decoder_push(upb_pbdecoder *d, uint64_t end) {
-  upb_pbdecoder_frame *fr = d->top;
-
-  if (end > fr->end_ofs) {
-    seterr(d, kPbDecoderSubmessageTooLong);
-    return false;
-  } else if (fr == d->limit) {
-    seterr(d, kPbDecoderStackOverflow);
-    return false;
-  }
-
-  fr++;
-  fr->end_ofs = end;
-  fr->dispatch = NULL;
-  fr->groupnum = 0;
-  d->top = fr;
-  return true;
-}
-
-static bool pushtagdelim(upb_pbdecoder *d, uint32_t arg) {
-  /* While we expect to see an "end" tag (either ENDGROUP or a non-sequence
-   * field number) prior to hitting any enclosing submessage end, pushing our
-   * existing delim end prevents us from continuing to parse values from a
-   * corrupt proto that doesn't give us an END tag in time. */
-  if (!decoder_push(d, d->top->end_ofs))
-    return false;
-  d->top->groupnum = arg;
-  return true;
-}
-
-/* Pops a frame from the decoder stack. */
-static void decoder_pop(upb_pbdecoder *d) { d->top--; }
-
-UPB_NOINLINE int32_t upb_pbdecoder_checktag_slow(upb_pbdecoder *d,
-                                                 uint64_t expected) {
-  uint64_t data = 0;
-  size_t bytes = upb_value_size(expected);
-  size_t read = peekbytes(d, &data, bytes);
-  if (read == bytes && data == expected) {
-    /* Advance past matched bytes. */
-    int32_t ok = getbytes(d, &data, read);
-    UPB_ASSERT(ok < 0);
-    return DECODE_OK;
-  } else if (read < bytes && memcmp(&data, &expected, read) == 0) {
-    return suspend_save(d);
-  } else {
-    return DECODE_MISMATCH;
-  }
-}
-
-int32_t upb_pbdecoder_skipunknown(upb_pbdecoder *d, int32_t fieldnum,
-                                  uint8_t wire_type) {
-  if (fieldnum >= 0)
-    goto have_tag;
-
-  while (true) {
-    uint32_t tag;
-    CHECK_RETURN(decode_v32(d, &tag));
-    wire_type = tag & 0x7;
-    fieldnum = tag >> 3;
-
-have_tag:
-    if (fieldnum == 0) {
-      seterr(d, "Saw invalid field number (0)");
-      return upb_pbdecoder_suspend(d);
-    }
-
-    switch (wire_type) {
-      case UPB_WIRE_TYPE_32BIT:
-        CHECK_RETURN(skip(d, 4));
-        break;
-      case UPB_WIRE_TYPE_64BIT:
-        CHECK_RETURN(skip(d, 8));
-        break;
-      case UPB_WIRE_TYPE_VARINT: {
-        uint64_t u64;
-        CHECK_RETURN(decode_varint(d, &u64));
-        break;
-      }
-      case UPB_WIRE_TYPE_DELIMITED: {
-        uint32_t len;
-        CHECK_RETURN(decode_v32(d, &len));
-        CHECK_RETURN(skip(d, len));
-        break;
-      }
-      case UPB_WIRE_TYPE_START_GROUP:
-        CHECK_SUSPEND(pushtagdelim(d, -fieldnum));
-        break;
-      case UPB_WIRE_TYPE_END_GROUP:
-        if (fieldnum == -d->top->groupnum) {
-          decoder_pop(d);
-        } else if (fieldnum == d->top->groupnum) {
-          return DECODE_ENDGROUP;
-        } else {
-          seterr(d, "Unmatched ENDGROUP tag.");
-          return upb_pbdecoder_suspend(d);
-        }
-        break;
-      default:
-        seterr(d, "Invalid wire type");
-        return upb_pbdecoder_suspend(d);
-    }
-
-    if (d->top->groupnum >= 0) {
-      /* TODO: More code needed for handling unknown groups. */
-      upb_sink_putunknown(d->top->sink, d->checkpoint, d->ptr - d->checkpoint);
-      return DECODE_OK;
-    }
-
-    /* Unknown group -- continue looping over unknown fields. */
-    checkpoint(d);
-  }
-}
-
-static void goto_endmsg(upb_pbdecoder *d) {
-  upb_value v;
-  bool found = upb_inttable_lookup32(d->top->dispatch, DISPATCH_ENDMSG, &v);
-  UPB_ASSERT(found);
-  d->pc = d->top->base + upb_value_getuint64(v);
-}
-
-/* Parses a tag and jumps to the corresponding bytecode instruction for this
- * field.
- *
- * If the tag is unknown (or the wire type doesn't match), parses the field as
- * unknown.  If the tag is a valid ENDGROUP tag, jumps to the bytecode
- * instruction for the end of message. */
-static int32_t dispatch(upb_pbdecoder *d) {
-  upb_inttable *dispatch = d->top->dispatch;
-  uint32_t tag;
-  uint8_t wire_type;
-  uint32_t fieldnum;
-  upb_value val;
-  int32_t retval;
-
-  /* Decode tag. */
-  CHECK_RETURN(decode_v32(d, &tag));
-  wire_type = tag & 0x7;
-  fieldnum = tag >> 3;
-
-  /* Lookup tag.  Because of packed/non-packed compatibility, we have to
-   * check the wire type against two possibilities. */
-  if (fieldnum != DISPATCH_ENDMSG &&
-      upb_inttable_lookup32(dispatch, fieldnum, &val)) {
-    uint64_t v = upb_value_getuint64(val);
-    if (wire_type == (v & 0xff)) {
-      d->pc = d->top->base + (v >> 16);
-      return DECODE_OK;
-    } else if (wire_type == ((v >> 8) & 0xff)) {
-      bool found =
-          upb_inttable_lookup(dispatch, fieldnum + UPB_MAX_FIELDNUMBER, &val);
-      UPB_ASSERT(found);
-      d->pc = d->top->base + upb_value_getuint64(val);
-      return DECODE_OK;
-    }
-  }
-
-  /* We have some unknown fields (or ENDGROUP) to parse.  The DISPATCH or TAG
-   * bytecode that triggered this is preceded by a CHECKDELIM bytecode which
-   * we need to back up to, so that when we're done skipping unknown data we
-   * can re-check the delimited end. */
-  d->last--;  /* Necessary if we get suspended */
-  d->pc = d->last;
-  UPB_ASSERT(getop(*d->last) == OP_CHECKDELIM);
-
-  /* Unknown field or ENDGROUP. */
-  retval = upb_pbdecoder_skipunknown(d, fieldnum, wire_type);
-
-  CHECK_RETURN(retval);
-
-  if (retval == DECODE_ENDGROUP) {
-    goto_endmsg(d);
-    return DECODE_OK;
-  }
-
-  return DECODE_OK;
-}
-
-/* Callers know that the stack is more than one deep because the opcodes that
- * call this only occur after PUSH operations. */
-upb_pbdecoder_frame *outer_frame(upb_pbdecoder *d) {
-  UPB_ASSERT(d->top != d->stack);
-  return d->top - 1;
-}
-
-
-/* The main decoding loop *****************************************************/
-
-/* The main decoder VM function.  Uses traditional bytecode dispatch loop with a
- * switch() statement. */
-size_t run_decoder_vm(upb_pbdecoder *d, const mgroup *group,
-                      const upb_bufhandle* handle) {
-
-#define VMCASE(op, code) \
-  case op: { code; if (consumes_input(op)) checkpoint(d); break; }
-#define PRIMITIVE_OP(type, wt, name, convfunc, ctype) \
-  VMCASE(OP_PARSE_ ## type, { \
-    ctype val; \
-    CHECK_RETURN(decode_ ## wt(d, &val)); \
-    upb_sink_put ## name(d->top->sink, arg, (convfunc)(val)); \
-  })
-
-  while(1) {
-    int32_t instruction;
-    opcode op;
-    uint32_t arg;
-    int32_t longofs;
-
-    d->last = d->pc;
-    instruction = *d->pc++;
-    op = getop(instruction);
-    arg = instruction >> 8;
-    longofs = arg;
-    UPB_ASSERT(d->ptr != d->residual_end);
-    UPB_UNUSED(group);
-#ifdef UPB_DUMP_BYTECODE
-    fprintf(stderr, "s_ofs=%d buf_ofs=%d data_rem=%d buf_rem=%d delim_rem=%d "
-                    "%x %s (%d)\n",
-            (int)offset(d),
-            (int)(d->ptr - d->buf),
-            (int)(d->data_end - d->ptr),
-            (int)(d->end - d->ptr),
-            (int)((d->top->end_ofs - d->bufstart_ofs) - (d->ptr - d->buf)),
-            (int)(d->pc - 1 - group->bytecode),
-            upb_pbdecoder_getopname(op),
-            arg);
-#endif
-    switch (op) {
-      /* Technically, we are losing data if we see a 32-bit varint that is not
-       * properly sign-extended.  We could detect this and error about the data
-       * loss, but proto2 does not do this, so we pass. */
-      PRIMITIVE_OP(INT32,    varint,  int32,  int32_t,      uint64_t)
-      PRIMITIVE_OP(INT64,    varint,  int64,  int64_t,      uint64_t)
-      PRIMITIVE_OP(UINT32,   varint,  uint32, uint32_t,     uint64_t)
-      PRIMITIVE_OP(UINT64,   varint,  uint64, uint64_t,     uint64_t)
-      PRIMITIVE_OP(FIXED32,  fixed32, uint32, uint32_t,     uint32_t)
-      PRIMITIVE_OP(FIXED64,  fixed64, uint64, uint64_t,     uint64_t)
-      PRIMITIVE_OP(SFIXED32, fixed32, int32,  int32_t,      uint32_t)
-      PRIMITIVE_OP(SFIXED64, fixed64, int64,  int64_t,      uint64_t)
-      PRIMITIVE_OP(BOOL,     varint,  bool,   bool,         uint64_t)
-      PRIMITIVE_OP(DOUBLE,   fixed64, double, as_double,    uint64_t)
-      PRIMITIVE_OP(FLOAT,    fixed32, float,  as_float,     uint32_t)
-      PRIMITIVE_OP(SINT32,   varint,  int32,  upb_zzdec_32, uint64_t)
-      PRIMITIVE_OP(SINT64,   varint,  int64,  upb_zzdec_64, uint64_t)
-
-      VMCASE(OP_SETDISPATCH,
-        d->top->base = d->pc - 1;
-        memcpy(&d->top->dispatch, d->pc, sizeof(void*));
-        d->pc += sizeof(void*) / sizeof(uint32_t);
-      )
-      VMCASE(OP_STARTMSG,
-        CHECK_SUSPEND(upb_sink_startmsg(d->top->sink));
-      )
-      VMCASE(OP_ENDMSG,
-        CHECK_SUSPEND(upb_sink_endmsg(d->top->sink, d->status));
-      )
-      VMCASE(OP_STARTSEQ,
-        upb_pbdecoder_frame *outer = outer_frame(d);
-        CHECK_SUSPEND(upb_sink_startseq(outer->sink, arg, &d->top->sink));
-      )
-      VMCASE(OP_ENDSEQ,
-        CHECK_SUSPEND(upb_sink_endseq(d->top->sink, arg));
-      )
-      VMCASE(OP_STARTSUBMSG,
-        upb_pbdecoder_frame *outer = outer_frame(d);
-        CHECK_SUSPEND(upb_sink_startsubmsg(outer->sink, arg, &d->top->sink));
-      )
-      VMCASE(OP_ENDSUBMSG,
-        CHECK_SUSPEND(upb_sink_endsubmsg(d->top->sink, arg));
-      )
-      VMCASE(OP_STARTSTR,
-        uint32_t len = delim_remaining(d);
-        upb_pbdecoder_frame *outer = outer_frame(d);
-        CHECK_SUSPEND(upb_sink_startstr(outer->sink, arg, len, &d->top->sink));
-        if (len == 0) {
-          d->pc++;  /* Skip OP_STRING. */
-        }
-      )
-      VMCASE(OP_STRING,
-        uint32_t len = curbufleft(d);
-        size_t n = upb_sink_putstring(d->top->sink, arg, d->ptr, len, handle);
-        if (n > len) {
-          if (n > delim_remaining(d)) {
-            seterr(d, "Tried to skip past end of string.");
-            return upb_pbdecoder_suspend(d);
-          } else {
-            int32_t ret = skip(d, n);
-            /* This shouldn't return DECODE_OK, because n > len. */
-            UPB_ASSERT(ret >= 0);
-            return ret;
-          }
-        }
-        advance(d, n);
-        if (n < len || d->delim_end == NULL) {
-          /* We aren't finished with this string yet. */
-          d->pc--;  /* Repeat OP_STRING. */
-          if (n > 0) checkpoint(d);
-          return upb_pbdecoder_suspend(d);
-        }
-      )
-      VMCASE(OP_ENDSTR,
-        CHECK_SUSPEND(upb_sink_endstr(d->top->sink, arg));
-      )
-      VMCASE(OP_PUSHTAGDELIM,
-        CHECK_SUSPEND(pushtagdelim(d, arg));
-      )
-      VMCASE(OP_SETBIGGROUPNUM,
-        d->top->groupnum = *d->pc++;
-      )
-      VMCASE(OP_POP,
-        UPB_ASSERT(d->top > d->stack);
-        decoder_pop(d);
-      )
-      VMCASE(OP_PUSHLENDELIM,
-        uint32_t len;
-        CHECK_RETURN(decode_v32(d, &len));
-        CHECK_SUSPEND(decoder_push(d, offset(d) + len));
-        set_delim_end(d);
-      )
-      VMCASE(OP_SETDELIM,
-        set_delim_end(d);
-      )
-      VMCASE(OP_CHECKDELIM,
-        /* We are guaranteed of this assert because we never allow ourselves to
-         * consume bytes beyond data_end, which covers delim_end when non-NULL.
-         */
-        UPB_ASSERT(!(d->delim_end && d->ptr > d->delim_end));
-        if (d->ptr == d->delim_end)
-          d->pc += longofs;
-      )
-      VMCASE(OP_CALL,
-        d->callstack[d->call_len++] = d->pc;
-        d->pc += longofs;
-      )
-      VMCASE(OP_RET,
-        UPB_ASSERT(d->call_len > 0);
-        d->pc = d->callstack[--d->call_len];
-      )
-      VMCASE(OP_BRANCH,
-        d->pc += longofs;
-      )
-      VMCASE(OP_TAG1,
-        uint8_t expected;
-        CHECK_SUSPEND(curbufleft(d) > 0);
-        expected = (arg >> 8) & 0xff;
-        if (*d->ptr == expected) {
-          advance(d, 1);
-        } else {
-          int8_t shortofs;
-         badtag:
-          shortofs = arg;
-          if (shortofs == LABEL_DISPATCH) {
-            CHECK_RETURN(dispatch(d));
-          } else {
-            d->pc += shortofs;
-            break; /* Avoid checkpoint(). */
-          }
-        }
-      )
-      VMCASE(OP_TAG2,
-        uint16_t expected;
-        CHECK_SUSPEND(curbufleft(d) > 0);
-        expected = (arg >> 8) & 0xffff;
-        if (curbufleft(d) >= 2) {
-          uint16_t actual;
-          memcpy(&actual, d->ptr, 2);
-          if (expected == actual) {
-            advance(d, 2);
-          } else {
-            goto badtag;
-          }
-        } else {
-          int32_t result = upb_pbdecoder_checktag_slow(d, expected);
-          if (result == DECODE_MISMATCH) goto badtag;
-          if (result >= 0) return result;
-        }
-      )
-      VMCASE(OP_TAGN, {
-        uint64_t expected;
-        int32_t result;
-        memcpy(&expected, d->pc, 8);
-        d->pc += 2;
-        result = upb_pbdecoder_checktag_slow(d, expected);
-        if (result == DECODE_MISMATCH) goto badtag;
-        if (result >= 0) return result;
-      })
-      VMCASE(OP_DISPATCH, {
-        CHECK_RETURN(dispatch(d));
-      })
-      VMCASE(OP_HALT, {
-        return d->size_param;
-      })
-    }
-  }
-}
-
-
-/* BytesHandler handlers ******************************************************/
-
-void *upb_pbdecoder_startbc(void *closure, const void *pc, size_t size_hint) {
-  upb_pbdecoder *d = closure;
-  UPB_UNUSED(size_hint);
-  d->top->end_ofs = UINT64_MAX;
-  d->bufstart_ofs = 0;
-  d->call_len = 1;
-  d->callstack[0] = &halt;
-  d->pc = pc;
-  d->skip = 0;
-  return d;
-}
-
-bool upb_pbdecoder_end(void *closure, const void *handler_data) {
-  upb_pbdecoder *d = closure;
-  const upb_pbdecodermethod *method = handler_data;
-  uint64_t end;
-  char dummy;
-
-  if (d->residual_end > d->residual) {
-    seterr(d, "Unexpected EOF: decoder still has buffered unparsed data");
-    return false;
-  }
-
-  if (d->skip) {
-    seterr(d, "Unexpected EOF inside skipped data");
-    return false;
-  }
-
-  if (d->top->end_ofs != UINT64_MAX) {
-    seterr(d, "Unexpected EOF inside delimited string");
-    return false;
-  }
-
-  /* The user's end() call indicates that the message ends here. */
-  end = offset(d);
-  d->top->end_ofs = end;
-
-  {
-    const uint32_t *p = d->pc;
-    d->stack->end_ofs = end;
-    /* Check the previous bytecode, but guard against beginning. */
-    if (p != method->code_base.ptr) p--;
-    if (getop(*p) == OP_CHECKDELIM) {
-      /* Rewind from OP_TAG* to OP_CHECKDELIM. */
-      UPB_ASSERT(getop(*d->pc) == OP_TAG1 ||
-             getop(*d->pc) == OP_TAG2 ||
-             getop(*d->pc) == OP_TAGN ||
-             getop(*d->pc) == OP_DISPATCH);
-      d->pc = p;
-    }
-    upb_pbdecoder_decode(closure, handler_data, &dummy, 0, NULL);
-  }
-
-  if (d->call_len != 0) {
-    seterr(d, "Unexpected EOF inside submessage or group");
-    return false;
-  }
-
-  return true;
-}
-
-size_t upb_pbdecoder_decode(void *decoder, const void *group, const char *buf,
-                            size_t size, const upb_bufhandle *handle) {
-  int32_t result = upb_pbdecoder_resume(decoder, NULL, buf, size, handle);
-
-  if (result == DECODE_ENDGROUP) goto_endmsg(decoder);
-  CHECK_RETURN(result);
-
-  return run_decoder_vm(decoder, group, handle);
-}
-
-
-/* Public API *****************************************************************/
-
-void upb_pbdecoder_reset(upb_pbdecoder *d) {
-  d->top = d->stack;
-  d->top->groupnum = 0;
-  d->ptr = d->residual;
-  d->buf = d->residual;
-  d->end = d->residual;
-  d->residual_end = d->residual;
-}
-
-upb_pbdecoder *upb_pbdecoder_create(upb_arena *a, const upb_pbdecodermethod *m,
-                                    upb_sink sink, upb_status *status) {
-  const size_t default_max_nesting = 64;
-#ifndef NDEBUG
-  size_t size_before = upb_arena_bytesallocated(a);
-#endif
-
-  upb_pbdecoder *d = upb_arena_malloc(a, sizeof(upb_pbdecoder));
-  if (!d) return NULL;
-
-  d->method_ = m;
-  d->callstack = upb_arena_malloc(a, callstacksize(d, default_max_nesting));
-  d->stack = upb_arena_malloc(a, stacksize(d, default_max_nesting));
-  if (!d->stack || !d->callstack) {
-    return NULL;
-  }
-
-  d->arena = a;
-  d->limit = d->stack + default_max_nesting - 1;
-  d->stack_size = default_max_nesting;
-  d->status = status;
-
-  upb_pbdecoder_reset(d);
-  upb_bytessink_reset(&d->input_, &m->input_handler_, d);
-
-  if (d->method_->dest_handlers_) {
-    if (sink.handlers != d->method_->dest_handlers_)
-      return NULL;
-  }
-  d->top->sink = sink;
-
-  /* If this fails, increase the value in decoder.h. */
-  UPB_ASSERT_DEBUGVAR(upb_arena_bytesallocated(a) - size_before <=
-                      UPB_PB_DECODER_SIZE);
-  return d;
-}
-
-uint64_t upb_pbdecoder_bytesparsed(const upb_pbdecoder *d) {
-  return offset(d);
-}
-
-const upb_pbdecodermethod *upb_pbdecoder_method(const upb_pbdecoder *d) {
-  return d->method_;
-}
-
-upb_bytessink upb_pbdecoder_input(upb_pbdecoder *d) {
-  return d->input_;
-}
-
-size_t upb_pbdecoder_maxnesting(const upb_pbdecoder *d) {
-  return d->stack_size;
-}
-
-bool upb_pbdecoder_setmaxnesting(upb_pbdecoder *d, size_t max) {
-  UPB_ASSERT(d->top >= d->stack);
-
-  if (max < (size_t)(d->top - d->stack)) {
-    /* Can't set a limit smaller than what we are currently at. */
-    return false;
-  }
-
-  if (max > d->stack_size) {
-    /* Need to reallocate stack and callstack to accommodate. */
-    size_t old_size = stacksize(d, d->stack_size);
-    size_t new_size = stacksize(d, max);
-    void *p = upb_arena_realloc(d->arena, d->stack, old_size, new_size);
-    if (!p) {
-      return false;
-    }
-    d->stack = p;
-
-    old_size = callstacksize(d, d->stack_size);
-    new_size = callstacksize(d, max);
-    p = upb_arena_realloc(d->arena, d->callstack, old_size, new_size);
-    if (!p) {
-      return false;
-    }
-    d->callstack = p;
-
-    d->stack_size = max;
-  }
-
-  d->limit = d->stack + max - 1;
-  return true;
-}
-/*
-** upb::Encoder
-**
-** Since we are implementing pure handlers (ie. without any out-of-band access
-** to pre-computed lengths), we have to buffer all submessages before we can
-** emit even their first byte.
-**
-** Not knowing the size of submessages also means we can't write a perfect
-** zero-copy implementation, even with buffering.  Lengths are stored as
-** varints, which means that we don't know how many bytes to reserve for the
-** length until we know what the length is.
-**
-** This leaves us with three main choices:
-**
-** 1. buffer all submessage data in a temporary buffer, then copy it exactly
-**    once into the output buffer.
-**
-** 2. attempt to buffer data directly into the output buffer, estimating how
-**    many bytes each length will take.  When our guesses are wrong, use
-**    memmove() to grow or shrink the allotted space.
-**
-** 3. buffer directly into the output buffer, allocating a max length
-**    ahead-of-time for each submessage length.  If we overallocated, we waste
-**    space, but no memcpy() or memmove() is required.  This approach requires
-**    defining a maximum size for submessages and rejecting submessages that
-**    exceed that size.
-**
-** (2) and (3) have the potential to have better performance, but they are more
-** complicated and subtle to implement:
-**
-**   (3) requires making an arbitrary choice of the maximum message size; it
-**       wastes space when submessages are shorter than this and fails
-**       completely when they are longer.  This makes it more finicky and
-**       requires configuration based on the input.  It also makes it impossible
-**       to perfectly match the output of reference encoders that always use the
-**       optimal amount of space for each length.
-**
-**   (2) requires guessing the the size upfront, and if multiple lengths are
-**       guessed wrong the minimum required number of memmove() operations may
-**       be complicated to compute correctly.  Implemented properly, it may have
-**       a useful amortized or average cost, but more investigation is required
-**       to determine this and what the optimal algorithm is to achieve it.
-**
-**   (1) makes you always pay for exactly one copy, but its implementation is
-**       the simplest and its performance is predictable.
-**
-** So for now, we implement (1) only.  If we wish to optimize later, we should
-** be able to do it without affecting users.
-**
-** The strategy is to buffer the segments of data that do *not* depend on
-** unknown lengths in one buffer, and keep a separate buffer of segment pointers
-** and lengths.  When the top-level submessage ends, we can go beginning to end,
-** alternating the writing of lengths with memcpy() of the rest of the data.
-** At the top level though, no buffering is required.
-*/
-
-
-
-/* The output buffer is divided into segments; a segment is a string of data
- * that is "ready to go" -- it does not need any varint lengths inserted into
- * the middle.  The seams between segments are where varints will be inserted
- * once they are known.
- *
- * We also use the concept of a "run", which is a range of encoded bytes that
- * occur at a single submessage level.  Every segment contains one or more runs.
- *
- * A segment can span messages.  Consider:
- *
- *                  .--Submessage lengths---------.
- *                  |       |                     |
- *                  |       V                     V
- *                  V      | |---------------    | |-----------------
- * Submessages:    | |-----------------------------------------------
- * Top-level msg: ------------------------------------------------------------
- *
- * Segments:          -----   -------------------   -----------------
- * Runs:              *----   *--------------*---   *----------------
- * (* marks the start)
- *
- * Note that the top-level menssage is not in any segment because it does not
- * have any length preceding it.
- *
- * A segment is only interrupted when another length needs to be inserted.  So
- * observe how the second segment spans both the inner submessage and part of
- * the next enclosing message. */
-typedef struct {
-  uint32_t msglen;  /* The length to varint-encode before this segment. */
-  uint32_t seglen;  /* Length of the segment. */
-} upb_pb_encoder_segment;
-
-struct upb_pb_encoder {
-  upb_arena *arena;
-
-  /* Our input and output. */
-  upb_sink input_;
-  upb_bytessink output_;
-
-  /* The "subclosure" -- used as the inner closure as part of the bytessink
-   * protocol. */
-  void *subc;
-
-  /* The output buffer and limit, and our current write position.  "buf"
-   * initially points to "initbuf", but is dynamically allocated if we need to
-   * grow beyond the initial size. */
-  char *buf, *ptr, *limit;
-
-  /* The beginning of the current run, or undefined if we are at the top
-   * level. */
-  char *runbegin;
-
-  /* The list of segments we are accumulating. */
-  upb_pb_encoder_segment *segbuf, *segptr, *seglimit;
-
-  /* The stack of enclosing submessages.  Each entry in the stack points to the
-   * segment where this submessage's length is being accumulated. */
-  int *stack, *top, *stacklimit;
-
-  /* Depth of startmsg/endmsg calls. */
-  int depth;
-};
-
-/* low-level buffering ********************************************************/
-
-/* Low-level functions for interacting with the output buffer. */
-
-/* TODO(haberman): handle pushback */
-static void putbuf(upb_pb_encoder *e, const char *buf, size_t len) {
-  size_t n = upb_bytessink_putbuf(e->output_, e->subc, buf, len, NULL);
-  UPB_ASSERT(n == len);
-}
-
-static upb_pb_encoder_segment *top(upb_pb_encoder *e) {
-  return &e->segbuf[*e->top];
-}
-
-/* Call to ensure that at least "bytes" bytes are available for writing at
- * e->ptr.  Returns false if the bytes could not be allocated. */
-static bool reserve(upb_pb_encoder *e, size_t bytes) {
-  if ((size_t)(e->limit - e->ptr) < bytes) {
-    /* Grow buffer. */
-    char *new_buf;
-    size_t needed = bytes + (e->ptr - e->buf);
-    size_t old_size = e->limit - e->buf;
-
-    size_t new_size = old_size;
-
-    while (new_size < needed) {
-      new_size *= 2;
-    }
-
-    new_buf = upb_arena_realloc(e->arena, e->buf, old_size, new_size);
-
-    if (new_buf == NULL) {
-      return false;
-    }
-
-    e->ptr = new_buf + (e->ptr - e->buf);
-    e->runbegin = new_buf + (e->runbegin - e->buf);
-    e->limit = new_buf + new_size;
-    e->buf = new_buf;
-  }
-
-  return true;
-}
-
-/* Call when "bytes" bytes have been writte at e->ptr.  The caller *must* have
- * previously called reserve() with at least this many bytes. */
-static void encoder_advance(upb_pb_encoder *e, size_t bytes) {
-  UPB_ASSERT((size_t)(e->limit - e->ptr) >= bytes);
-  e->ptr += bytes;
-}
-
-/* Call when all of the bytes for a handler have been written.  Flushes the
- * bytes if possible and necessary, returning false if this failed. */
-static bool commit(upb_pb_encoder *e) {
-  if (!e->top) {
-    /* We aren't inside a delimited region.  Flush our accumulated bytes to
-     * the output.
-     *
-     * TODO(haberman): in the future we may want to delay flushing for
-     * efficiency reasons. */
-    putbuf(e, e->buf, e->ptr - e->buf);
-    e->ptr = e->buf;
-  }
-
-  return true;
-}
-
-/* Writes the given bytes to the buffer, handling reserve/advance. */
-static bool encode_bytes(upb_pb_encoder *e, const void *data, size_t len) {
-  if (!reserve(e, len)) {
-    return false;
-  }
-
-  memcpy(e->ptr, data, len);
-  encoder_advance(e, len);
-  return true;
-}
-
-/* Finish the current run by adding the run totals to the segment and message
- * length. */
-static void accumulate(upb_pb_encoder *e) {
-  size_t run_len;
-  UPB_ASSERT(e->ptr >= e->runbegin);
-  run_len = e->ptr - e->runbegin;
-  e->segptr->seglen += run_len;
-  top(e)->msglen += run_len;
-  e->runbegin = e->ptr;
-}
-
-/* Call to indicate the start of delimited region for which the full length is
- * not yet known.  All data will be buffered until the length is known.
- * Delimited regions may be nested; their lengths will all be tracked properly. */
-static bool start_delim(upb_pb_encoder *e) {
-  if (e->top) {
-    /* We are already buffering, advance to the next segment and push it on the
-     * stack. */
-    accumulate(e);
-
-    if (++e->top == e->stacklimit) {
-      /* TODO(haberman): grow stack? */
-      return false;
-    }
-
-    if (++e->segptr == e->seglimit) {
-      /* Grow segment buffer. */
-      size_t old_size =
-          (e->seglimit - e->segbuf) * sizeof(upb_pb_encoder_segment);
-      size_t new_size = old_size * 2;
-      upb_pb_encoder_segment *new_buf =
-          upb_arena_realloc(e->arena, e->segbuf, old_size, new_size);
-
-      if (new_buf == NULL) {
-        return false;
-      }
-
-      e->segptr = new_buf + (e->segptr - e->segbuf);
-      e->seglimit = new_buf + (new_size / sizeof(upb_pb_encoder_segment));
-      e->segbuf = new_buf;
-    }
-  } else {
-    /* We were previously at the top level, start buffering. */
-    e->segptr = e->segbuf;
-    e->top = e->stack;
-    e->runbegin = e->ptr;
-  }
-
-  *e->top = e->segptr - e->segbuf;
-  e->segptr->seglen = 0;
-  e->segptr->msglen = 0;
-
-  return true;
-}
-
-/* Call to indicate the end of a delimited region.  We now know the length of
- * the delimited region.  If we are not nested inside any other delimited
- * regions, we can now emit all of the buffered data we accumulated. */
-static bool end_delim(upb_pb_encoder *e) {
-  size_t msglen;
-  accumulate(e);
-  msglen = top(e)->msglen;
-
-  if (e->top == e->stack) {
-    /* All lengths are now available, emit all buffered data. */
-    char buf[UPB_PB_VARINT_MAX_LEN];
-    upb_pb_encoder_segment *s;
-    const char *ptr = e->buf;
-    for (s = e->segbuf; s <= e->segptr; s++) {
-      size_t lenbytes = upb_vencode64(s->msglen, buf);
-      putbuf(e, buf, lenbytes);
-      putbuf(e, ptr, s->seglen);
-      ptr += s->seglen;
-    }
-
-    e->ptr = e->buf;
-    e->top = NULL;
-  } else {
-    /* Need to keep buffering; propagate length info into enclosing
-     * submessages. */
-    --e->top;
-    top(e)->msglen += msglen + upb_varint_size(msglen);
-  }
-
-  return true;
-}
-
-
-/* tag_t **********************************************************************/
-
-/* A precomputed (pre-encoded) tag and length. */
-
-typedef struct {
-  uint8_t bytes;
-  char tag[7];
-} tag_t;
-
-/* Allocates a new tag for this field, and sets it in these handlerattr. */
-static void new_tag(upb_handlers *h, const upb_fielddef *f, upb_wiretype_t wt,
-                    upb_handlerattr *attr) {
-  uint32_t n = upb_fielddef_number(f);
-
-  tag_t *tag = upb_gmalloc(sizeof(tag_t));
-  tag->bytes = upb_vencode64((n << 3) | wt, tag->tag);
-
-  attr->handler_data = tag;
-  upb_handlers_addcleanup(h, tag, upb_gfree);
-}
-
-static bool encode_tag(upb_pb_encoder *e, const tag_t *tag) {
-  return encode_bytes(e, tag->tag, tag->bytes);
-}
-
-
-/* encoding of wire types *****************************************************/
-
-static bool encode_fixed64(upb_pb_encoder *e, uint64_t val) {
-  /* TODO(haberman): byte-swap for big endian. */
-  return encode_bytes(e, &val, sizeof(uint64_t));
-}
-
-static bool encode_fixed32(upb_pb_encoder *e, uint32_t val) {
-  /* TODO(haberman): byte-swap for big endian. */
-  return encode_bytes(e, &val, sizeof(uint32_t));
-}
-
-static bool encode_varint(upb_pb_encoder *e, uint64_t val) {
-  if (!reserve(e, UPB_PB_VARINT_MAX_LEN)) {
-    return false;
-  }
-
-  encoder_advance(e, upb_vencode64(val, e->ptr));
-  return true;
-}
-
-static uint64_t dbl2uint64(double d) {
-  uint64_t ret;
-  memcpy(&ret, &d, sizeof(uint64_t));
-  return ret;
-}
-
-static uint32_t flt2uint32(float d) {
-  uint32_t ret;
-  memcpy(&ret, &d, sizeof(uint32_t));
-  return ret;
-}
-
-
-/* encoding of proto types ****************************************************/
-
-static bool startmsg(void *c, const void *hd) {
-  upb_pb_encoder *e = c;
-  UPB_UNUSED(hd);
-  if (e->depth++ == 0) {
-    upb_bytessink_start(e->output_, 0, &e->subc);
-  }
-  return true;
-}
-
-static bool endmsg(void *c, const void *hd, upb_status *status) {
-  upb_pb_encoder *e = c;
-  UPB_UNUSED(hd);
-  UPB_UNUSED(status);
-  if (--e->depth == 0) {
-    upb_bytessink_end(e->output_);
-  }
-  return true;
-}
-
-static void *encode_startdelimfield(void *c, const void *hd) {
-  bool ok = encode_tag(c, hd) && commit(c) && start_delim(c);
-  return ok ? c : UPB_BREAK;
-}
-
-static bool encode_unknown(void *c, const void *hd, const char *buf,
-                           size_t len) {
-  UPB_UNUSED(hd);
-  return encode_bytes(c, buf, len) && commit(c);
-}
-
-static bool encode_enddelimfield(void *c, const void *hd) {
-  UPB_UNUSED(hd);
-  return end_delim(c);
-}
-
-static void *encode_startgroup(void *c, const void *hd) {
-  return (encode_tag(c, hd) && commit(c)) ? c : UPB_BREAK;
-}
-
-static bool encode_endgroup(void *c, const void *hd) {
-  return encode_tag(c, hd) && commit(c);
-}
-
-static void *encode_startstr(void *c, const void *hd, size_t size_hint) {
-  UPB_UNUSED(size_hint);
-  return encode_startdelimfield(c, hd);
-}
-
-static size_t encode_strbuf(void *c, const void *hd, const char *buf,
-                            size_t len, const upb_bufhandle *h) {
-  UPB_UNUSED(hd);
-  UPB_UNUSED(h);
-  return encode_bytes(c, buf, len) ? len : 0;
-}
-
-#define T(type, ctype, convert, encode)                                  \
-  static bool encode_scalar_##type(void *e, const void *hd, ctype val) { \
-    return encode_tag(e, hd) && encode(e, (convert)(val)) && commit(e);  \
-  }                                                                      \
-  static bool encode_packed_##type(void *e, const void *hd, ctype val) { \
-    UPB_UNUSED(hd);                                                      \
-    return encode(e, (convert)(val));                                    \
-  }
-
-T(double,   double,   dbl2uint64,   encode_fixed64)
-T(float,    float,    flt2uint32,   encode_fixed32)
-T(int64,    int64_t,  uint64_t,     encode_varint)
-T(int32,    int32_t,  int64_t,      encode_varint)
-T(fixed64,  uint64_t, uint64_t,     encode_fixed64)
-T(fixed32,  uint32_t, uint32_t,     encode_fixed32)
-T(bool,     bool,     bool,         encode_varint)
-T(uint32,   uint32_t, uint32_t,     encode_varint)
-T(uint64,   uint64_t, uint64_t,     encode_varint)
-T(enum,     int32_t,  uint32_t,     encode_varint)
-T(sfixed32, int32_t,  uint32_t,     encode_fixed32)
-T(sfixed64, int64_t,  uint64_t,     encode_fixed64)
-T(sint32,   int32_t,  upb_zzenc_32, encode_varint)
-T(sint64,   int64_t,  upb_zzenc_64, encode_varint)
-
-#undef T
-
-
-/* code to build the handlers *************************************************/
-
-#include <stdio.h>
-static void newhandlers_callback(const void *closure, upb_handlers *h) {
-  const upb_msgdef *m;
-  upb_msg_field_iter i;
-
-  UPB_UNUSED(closure);
-
-  upb_handlers_setstartmsg(h, startmsg, NULL);
-  upb_handlers_setendmsg(h, endmsg, NULL);
-  upb_handlers_setunknown(h, encode_unknown, NULL);
-
-  m = upb_handlers_msgdef(h);
-  for(upb_msg_field_begin(&i, m);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
-    bool packed = upb_fielddef_isseq(f) && upb_fielddef_isprimitive(f) &&
-                  upb_fielddef_packed(f);
-    upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-    upb_wiretype_t wt =
-        packed ? UPB_WIRE_TYPE_DELIMITED
-               : upb_pb_native_wire_types[upb_fielddef_descriptortype(f)];
-
-    /* Pre-encode the tag for this field. */
-    new_tag(h, f, wt, &attr);
-
-    if (packed) {
-      upb_handlers_setstartseq(h, f, encode_startdelimfield, &attr);
-      upb_handlers_setendseq(h, f, encode_enddelimfield, &attr);
-    }
-
-#define T(upper, lower, upbtype)                                     \
-  case UPB_DESCRIPTOR_TYPE_##upper:                                  \
-    if (packed) {                                                    \
-      upb_handlers_set##upbtype(h, f, encode_packed_##lower, &attr); \
-    } else {                                                         \
-      upb_handlers_set##upbtype(h, f, encode_scalar_##lower, &attr); \
-    }                                                                \
-    break;
-
-    switch (upb_fielddef_descriptortype(f)) {
-      T(DOUBLE,   double,   double);
-      T(FLOAT,    float,    float);
-      T(INT64,    int64,    int64);
-      T(INT32,    int32,    int32);
-      T(FIXED64,  fixed64,  uint64);
-      T(FIXED32,  fixed32,  uint32);
-      T(BOOL,     bool,     bool);
-      T(UINT32,   uint32,   uint32);
-      T(UINT64,   uint64,   uint64);
-      T(ENUM,     enum,     int32);
-      T(SFIXED32, sfixed32, int32);
-      T(SFIXED64, sfixed64, int64);
-      T(SINT32,   sint32,   int32);
-      T(SINT64,   sint64,   int64);
-      case UPB_DESCRIPTOR_TYPE_STRING:
-      case UPB_DESCRIPTOR_TYPE_BYTES:
-        upb_handlers_setstartstr(h, f, encode_startstr, &attr);
-        upb_handlers_setendstr(h, f, encode_enddelimfield, &attr);
-        upb_handlers_setstring(h, f, encode_strbuf, &attr);
-        break;
-      case UPB_DESCRIPTOR_TYPE_MESSAGE:
-        upb_handlers_setstartsubmsg(h, f, encode_startdelimfield, &attr);
-        upb_handlers_setendsubmsg(h, f, encode_enddelimfield, &attr);
-        break;
-      case UPB_DESCRIPTOR_TYPE_GROUP: {
-        /* Endgroup takes a different tag (wire_type = END_GROUP). */
-        upb_handlerattr attr2 = UPB_HANDLERATTR_INIT;
-        new_tag(h, f, UPB_WIRE_TYPE_END_GROUP, &attr2);
-
-        upb_handlers_setstartsubmsg(h, f, encode_startgroup, &attr);
-        upb_handlers_setendsubmsg(h, f, encode_endgroup, &attr2);
-
-        break;
-      }
-    }
-
-#undef T
-  }
-}
-
-void upb_pb_encoder_reset(upb_pb_encoder *e) {
-  e->segptr = NULL;
-  e->top = NULL;
-  e->depth = 0;
-}
-
-
-/* public API *****************************************************************/
-
-upb_handlercache *upb_pb_encoder_newcache(void) {
-  return upb_handlercache_new(newhandlers_callback, NULL);
-}
-
-upb_pb_encoder *upb_pb_encoder_create(upb_arena *arena, const upb_handlers *h,
-                                      upb_bytessink output) {
-  const size_t initial_bufsize = 256;
-  const size_t initial_segbufsize = 16;
-  /* TODO(haberman): make this configurable. */
-  const size_t stack_size = 64;
-#ifndef NDEBUG
-  const size_t size_before = upb_arena_bytesallocated(arena);
-#endif
-
-  upb_pb_encoder *e = upb_arena_malloc(arena, sizeof(upb_pb_encoder));
-  if (!e) return NULL;
-
-  e->buf = upb_arena_malloc(arena, initial_bufsize);
-  e->segbuf = upb_arena_malloc(arena, initial_segbufsize * sizeof(*e->segbuf));
-  e->stack = upb_arena_malloc(arena, stack_size * sizeof(*e->stack));
-
-  if (!e->buf || !e->segbuf || !e->stack) {
-    return NULL;
-  }
-
-  e->limit = e->buf + initial_bufsize;
-  e->seglimit = e->segbuf + initial_segbufsize;
-  e->stacklimit = e->stack + stack_size;
-
-  upb_pb_encoder_reset(e);
-  upb_sink_reset(&e->input_, h, e);
-
-  e->arena = arena;
-  e->output_ = output;
-  e->subc = output.closure;
-  e->ptr = e->buf;
-
-  /* If this fails, increase the value in encoder.h. */
-  UPB_ASSERT_DEBUGVAR(upb_arena_bytesallocated(arena) - size_before <=
-                      UPB_PB_ENCODER_SIZE);
-  return e;
-}
-
-upb_sink upb_pb_encoder_input(upb_pb_encoder *e) { return e->input_; }
-/*
- * upb::pb::TextPrinter
- *
- * OPT: This is not optimized at all.  It uses printf() which parses the format
- * string every time, and it allocates memory for every put.
- */
-
-
-#include <ctype.h>
-#include <float.h>
-#include <inttypes.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-
-
-
-struct upb_textprinter {
-  upb_sink input_;
-  upb_bytessink output_;
-  int indent_depth_;
-  bool single_line_;
-  void *subc;
-};
-
-#define CHECK(x) if ((x) < 0) goto err;
-
-static const char *shortname(const char *longname) {
-  const char *last = strrchr(longname, '.');
-  return last ? last + 1 : longname;
-}
-
-static int indent(upb_textprinter *p) {
-  int i;
-  if (!p->single_line_)
-    for (i = 0; i < p->indent_depth_; i++)
-      upb_bytessink_putbuf(p->output_, p->subc, "  ", 2, NULL);
-  return 0;
-}
-
-static int endfield(upb_textprinter *p) {
-  const char ch = (p->single_line_ ? ' ' : '\n');
-  upb_bytessink_putbuf(p->output_, p->subc, &ch, 1, NULL);
-  return 0;
-}
-
-static int putescaped(upb_textprinter *p, const char *buf, size_t len,
-                      bool preserve_utf8) {
-  /* Based on CEscapeInternal() from Google's protobuf release. */
-  char dstbuf[4096], *dst = dstbuf, *dstend = dstbuf + sizeof(dstbuf);
-  const char *end = buf + len;
-
-  /* I think hex is prettier and more useful, but proto2 uses octal; should
-   * investigate whether it can parse hex also. */
-  const bool use_hex = false;
-  bool last_hex_escape = false; /* true if last output char was \xNN */
-
-  for (; buf < end; buf++) {
-    bool is_hex_escape;
-
-    if (dstend - dst < 4) {
-      upb_bytessink_putbuf(p->output_, p->subc, dstbuf, dst - dstbuf, NULL);
-      dst = dstbuf;
-    }
-
-    is_hex_escape = false;
-    switch (*buf) {
-      case '\n': *(dst++) = '\\'; *(dst++) = 'n';  break;
-      case '\r': *(dst++) = '\\'; *(dst++) = 'r';  break;
-      case '\t': *(dst++) = '\\'; *(dst++) = 't';  break;
-      case '\"': *(dst++) = '\\'; *(dst++) = '\"'; break;
-      case '\'': *(dst++) = '\\'; *(dst++) = '\''; break;
-      case '\\': *(dst++) = '\\'; *(dst++) = '\\'; break;
-      default:
-        /* Note that if we emit \xNN and the buf character after that is a hex
-         * digit then that digit must be escaped too to prevent it being
-         * interpreted as part of the character code by C. */
-        if ((!preserve_utf8 || (uint8_t)*buf < 0x80) &&
-            (!isprint(*buf) || (last_hex_escape && isxdigit(*buf)))) {
-          sprintf(dst, (use_hex ? "\\x%02x" : "\\%03o"), (uint8_t)*buf);
-          is_hex_escape = use_hex;
-          dst += 4;
-        } else {
-          *(dst++) = *buf; break;
-        }
-    }
-    last_hex_escape = is_hex_escape;
-  }
-  /* Flush remaining data. */
-  upb_bytessink_putbuf(p->output_, p->subc, dstbuf, dst - dstbuf, NULL);
-  return 0;
-}
-
-bool putf(upb_textprinter *p, const char *fmt, ...) {
-  va_list args;
-  va_list args_copy;
-  char *str;
-  int written;
-  int len;
-  bool ok;
-
-  va_start(args, fmt);
-
-  /* Run once to get the length of the string. */
-  _upb_va_copy(args_copy, args);
-  len = _upb_vsnprintf(NULL, 0, fmt, args_copy);
-  va_end(args_copy);
-
-  /* + 1 for NULL terminator (vsprintf() requires it even if we don't). */
-  str = upb_gmalloc(len + 1);
-  if (!str) return false;
-  written = vsprintf(str, fmt, args);
-  va_end(args);
-  UPB_ASSERT(written == len);
-
-  ok = upb_bytessink_putbuf(p->output_, p->subc, str, len, NULL);
-  upb_gfree(str);
-  return ok;
-}
-
-
-/* handlers *******************************************************************/
-
-static bool textprinter_startmsg(void *c, const void *hd) {
-  upb_textprinter *p = c;
-  UPB_UNUSED(hd);
-  if (p->indent_depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc);
-  }
-  return true;
-}
-
-static bool textprinter_endmsg(void *c, const void *hd, upb_status *s) {
-  upb_textprinter *p = c;
-  UPB_UNUSED(hd);
-  UPB_UNUSED(s);
-  if (p->indent_depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-  return true;
-}
-
-#define TYPE(name, ctype, fmt) \
-  static bool textprinter_put ## name(void *closure, const void *handler_data, \
-                                      ctype val) {                             \
-    upb_textprinter *p = closure;                                              \
-    const upb_fielddef *f = handler_data;                                      \
-    CHECK(indent(p));                                                          \
-    putf(p, "%s: " fmt, upb_fielddef_name(f), val);                            \
-    CHECK(endfield(p));                                                        \
-    return true;                                                               \
-  err:                                                                         \
-    return false;                                                              \
-}
-
-static bool textprinter_putbool(void *closure, const void *handler_data,
-                                bool val) {
-  upb_textprinter *p = closure;
-  const upb_fielddef *f = handler_data;
-  CHECK(indent(p));
-  putf(p, "%s: %s", upb_fielddef_name(f), val ? "true" : "false");
-  CHECK(endfield(p));
-  return true;
-err:
-  return false;
-}
-
-#define STRINGIFY_HELPER(x) #x
-#define STRINGIFY_MACROVAL(x) STRINGIFY_HELPER(x)
-
-TYPE(int32,  int32_t,  "%" PRId32)
-TYPE(int64,  int64_t,  "%" PRId64)
-TYPE(uint32, uint32_t, "%" PRIu32)
-TYPE(uint64, uint64_t, "%" PRIu64)
-TYPE(float,  float,    "%." STRINGIFY_MACROVAL(FLT_DIG) "g")
-TYPE(double, double,   "%." STRINGIFY_MACROVAL(DBL_DIG) "g")
-
-#undef TYPE
-
-/* Output a symbolic value from the enum if found, else just print as int32. */
-static bool textprinter_putenum(void *closure, const void *handler_data,
-                                int32_t val) {
-  upb_textprinter *p = closure;
-  const upb_fielddef *f = handler_data;
-  const upb_enumdef *enum_def = upb_fielddef_enumsubdef(f);
-  const char *label = upb_enumdef_iton(enum_def, val);
-  if (label) {
-    indent(p);
-    putf(p, "%s: %s", upb_fielddef_name(f), label);
-    endfield(p);
-  } else {
-    if (!textprinter_putint32(closure, handler_data, val))
-      return false;
-  }
-  return true;
-}
-
-static void *textprinter_startstr(void *closure, const void *handler_data,
-                      size_t size_hint) {
-  upb_textprinter *p = closure;
-  const upb_fielddef *f = handler_data;
-  UPB_UNUSED(size_hint);
-  indent(p);
-  putf(p, "%s: \"", upb_fielddef_name(f));
-  return p;
-}
-
-static bool textprinter_endstr(void *closure, const void *handler_data) {
-  upb_textprinter *p = closure;
-  UPB_UNUSED(handler_data);
-  putf(p, "\"");
-  endfield(p);
-  return true;
-}
-
-static size_t textprinter_putstr(void *closure, const void *hd, const char *buf,
-                                 size_t len, const upb_bufhandle *handle) {
-  upb_textprinter *p = closure;
-  const upb_fielddef *f = hd;
-  UPB_UNUSED(handle);
-  CHECK(putescaped(p, buf, len, upb_fielddef_type(f) == UPB_TYPE_STRING));
-  return len;
-err:
-  return 0;
-}
-
-static void *textprinter_startsubmsg(void *closure, const void *handler_data) {
-  upb_textprinter *p = closure;
-  const char *name = handler_data;
-  CHECK(indent(p));
-  putf(p, "%s {%c", name, p->single_line_ ? ' ' : '\n');
-  p->indent_depth_++;
-  return p;
-err:
-  return UPB_BREAK;
-}
-
-static bool textprinter_endsubmsg(void *closure, const void *handler_data) {
-  upb_textprinter *p = closure;
-  UPB_UNUSED(handler_data);
-  p->indent_depth_--;
-  CHECK(indent(p));
-  upb_bytessink_putbuf(p->output_, p->subc, "}", 1, NULL);
-  CHECK(endfield(p));
-  return true;
-err:
-  return false;
-}
-
-static void onmreg(const void *c, upb_handlers *h) {
-  const upb_msgdef *m = upb_handlers_msgdef(h);
-  upb_msg_field_iter i;
-  UPB_UNUSED(c);
-
-  upb_handlers_setstartmsg(h, textprinter_startmsg, NULL);
-  upb_handlers_setendmsg(h, textprinter_endmsg, NULL);
-
-  for(upb_msg_field_begin(&i, m);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    upb_fielddef *f = upb_msg_iter_field(&i);
-    upb_handlerattr attr = UPB_HANDLERATTR_INIT;
-    attr.handler_data = f;
+    /* TODO(haberman): change upb_fielddef to not require this switch(). */
+    upb_msgval val = {0};
     switch (upb_fielddef_type(f)) {
       case UPB_TYPE_INT32:
-        upb_handlers_setint32(h, f, textprinter_putint32, &attr);
+      case UPB_TYPE_ENUM:
+        val.int32_val = upb_fielddef_defaultint32(f);
         break;
       case UPB_TYPE_INT64:
-        upb_handlers_setint64(h, f, textprinter_putint64, &attr);
+        val.int64_val = upb_fielddef_defaultint64(f);
         break;
       case UPB_TYPE_UINT32:
-        upb_handlers_setuint32(h, f, textprinter_putuint32, &attr);
+        val.uint32_val = upb_fielddef_defaultuint32(f);
         break;
       case UPB_TYPE_UINT64:
-        upb_handlers_setuint64(h, f, textprinter_putuint64, &attr);
+        val.uint64_val = upb_fielddef_defaultuint64(f);
         break;
       case UPB_TYPE_FLOAT:
-        upb_handlers_setfloat(h, f, textprinter_putfloat, &attr);
+        val.float_val = upb_fielddef_defaultfloat(f);
         break;
       case UPB_TYPE_DOUBLE:
-        upb_handlers_setdouble(h, f, textprinter_putdouble, &attr);
+        val.double_val = upb_fielddef_defaultdouble(f);
         break;
       case UPB_TYPE_BOOL:
-        upb_handlers_setbool(h, f, textprinter_putbool, &attr);
+        val.double_val = upb_fielddef_defaultbool(f);
         break;
       case UPB_TYPE_STRING:
       case UPB_TYPE_BYTES:
-        upb_handlers_setstartstr(h, f, textprinter_startstr, &attr);
-        upb_handlers_setstring(h, f, textprinter_putstr, &attr);
-        upb_handlers_setendstr(h, f, textprinter_endstr, &attr);
+        val.str_val.data = upb_fielddef_defaultstr(f, &val.str_val.size);
         break;
-      case UPB_TYPE_MESSAGE: {
-        const char *name =
-            upb_fielddef_descriptortype(f) == UPB_DESCRIPTOR_TYPE_GROUP
-                ? shortname(upb_msgdef_fullname(upb_fielddef_msgsubdef(f)))
-                : upb_fielddef_name(f);
-        attr.handler_data = name;
-        upb_handlers_setstartsubmsg(h, f, textprinter_startsubmsg, &attr);
-        upb_handlers_setendsubmsg(h, f, textprinter_endsubmsg, &attr);
-        break;
-      }
-      case UPB_TYPE_ENUM:
-        upb_handlers_setint32(h, f, textprinter_putenum, &attr);
+      case UPB_TYPE_MESSAGE:
+        val.msg_val = NULL;
         break;
     }
+    return val;
   }
 }
 
-static void textprinter_reset(upb_textprinter *p, bool single_line) {
-  p->single_line_ = single_line;
-  p->indent_depth_ = 0;
-}
-
-
-/* Public API *****************************************************************/
-
-upb_textprinter *upb_textprinter_create(upb_arena *arena, const upb_handlers *h,
-                                        upb_bytessink output) {
-  upb_textprinter *p = upb_arena_malloc(arena, sizeof(upb_textprinter));
-  if (!p) return NULL;
-
-  p->output_ = output;
-  upb_sink_reset(&p->input_, h, p);
-  textprinter_reset(p, false);
-
-  return p;
-}
-
-upb_handlercache *upb_textprinter_newcache(void) {
-  return upb_handlercache_new(&onmreg, NULL);
-}
-
-upb_sink upb_textprinter_input(upb_textprinter *p) { return p->input_; }
-
-void upb_textprinter_setsingleline(upb_textprinter *p, bool single_line) {
-  p->single_line_ = single_line;
-}
-
-
-/* Index is descriptor type. */
-const uint8_t upb_pb_native_wire_types[] = {
-  UPB_WIRE_TYPE_END_GROUP,     /* ENDGROUP */
-  UPB_WIRE_TYPE_64BIT,         /* DOUBLE */
-  UPB_WIRE_TYPE_32BIT,         /* FLOAT */
-  UPB_WIRE_TYPE_VARINT,        /* INT64 */
-  UPB_WIRE_TYPE_VARINT,        /* UINT64 */
-  UPB_WIRE_TYPE_VARINT,        /* INT32 */
-  UPB_WIRE_TYPE_64BIT,         /* FIXED64 */
-  UPB_WIRE_TYPE_32BIT,         /* FIXED32 */
-  UPB_WIRE_TYPE_VARINT,        /* BOOL */
-  UPB_WIRE_TYPE_DELIMITED,     /* STRING */
-  UPB_WIRE_TYPE_START_GROUP,   /* GROUP */
-  UPB_WIRE_TYPE_DELIMITED,     /* MESSAGE */
-  UPB_WIRE_TYPE_DELIMITED,     /* BYTES */
-  UPB_WIRE_TYPE_VARINT,        /* UINT32 */
-  UPB_WIRE_TYPE_VARINT,        /* ENUM */
-  UPB_WIRE_TYPE_32BIT,         /* SFIXED32 */
-  UPB_WIRE_TYPE_64BIT,         /* SFIXED64 */
-  UPB_WIRE_TYPE_VARINT,        /* SINT32 */
-  UPB_WIRE_TYPE_VARINT,        /* SINT64 */
-};
-
-/* A basic branch-based decoder, uses 32-bit values to get good performance
- * on 32-bit architectures (but performs well on 64-bits also).
- * This scheme comes from the original Google Protobuf implementation
- * (proto2). */
-upb_decoderet upb_vdecode_max8_branch32(upb_decoderet r) {
-  upb_decoderet err = {NULL, 0};
-  const char *p = r.p;
-  uint32_t low = (uint32_t)r.val;
-  uint32_t high = 0;
-  uint32_t b;
-  b = *(p++); low  |= (b & 0x7fU) << 14; if (!(b & 0x80)) goto done;
-  b = *(p++); low  |= (b & 0x7fU) << 21; if (!(b & 0x80)) goto done;
-  b = *(p++); low  |= (b & 0x7fU) << 28;
-              high  = (b & 0x7fU) >>  4; if (!(b & 0x80)) goto done;
-  b = *(p++); high |= (b & 0x7fU) <<  3; if (!(b & 0x80)) goto done;
-  b = *(p++); high |= (b & 0x7fU) << 10; if (!(b & 0x80)) goto done;
-  b = *(p++); high |= (b & 0x7fU) << 17; if (!(b & 0x80)) goto done;
-  b = *(p++); high |= (b & 0x7fU) << 24; if (!(b & 0x80)) goto done;
-  b = *(p++); high |= (b & 0x7fU) << 31; if (!(b & 0x80)) goto done;
-  return err;
-
-done:
-  r.val = ((uint64_t)high << 32) | low;
-  r.p = p;
-  return r;
-}
-
-/* Like the previous, but uses 64-bit values. */
-upb_decoderet upb_vdecode_max8_branch64(upb_decoderet r) {
-  const char *p = r.p;
-  uint64_t val = r.val;
-  uint64_t b;
-  upb_decoderet err = {NULL, 0};
-  b = *(p++); val |= (b & 0x7fU) << 14; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 21; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 28; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 35; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 42; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 49; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 56; if (!(b & 0x80)) goto done;
-  b = *(p++); val |= (b & 0x7fU) << 63; if (!(b & 0x80)) goto done;
-  return err;
-
-done:
-  r.val = val;
-  r.p = p;
-  return r;
-}
-
-#line 1 "upb/json/parser.rl"
-/*
-** upb::json::Parser (upb_json_parser)
-**
-** A parser that uses the Ragel State Machine Compiler to generate
-** the finite automata.
-**
-** Ragel only natively handles regular languages, but we can manually
-** program it a bit to handle context-free languages like JSON, by using
-** the "fcall" and "fret" constructs.
-**
-** This parser can handle the basics, but needs several things to be fleshed
-** out:
-**
-** - handling of unicode escape sequences (including high surrogate pairs).
-** - properly check and report errors for unknown fields, stack overflow,
-**   improper array nesting (or lack of nesting).
-** - handling of base64 sequences with padding characters.
-** - handling of push-back (non-success returns from sink functions).
-** - handling of keys/escape-sequences/etc that span input buffers.
-*/
-
-#include <ctype.h>
-#include <errno.h>
-#include <float.h>
-#include <math.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <time.h>
-
-
-
-#define UPB_JSON_MAX_DEPTH 64
-
-/* Type of value message */
-enum {
-  VALUE_NULLVALUE   = 0,
-  VALUE_NUMBERVALUE = 1,
-  VALUE_STRINGVALUE = 2,
-  VALUE_BOOLVALUE   = 3,
-  VALUE_STRUCTVALUE = 4,
-  VALUE_LISTVALUE   = 5
-};
-
-/* Forward declare */
-static bool is_top_level(upb_json_parser *p);
-static bool is_wellknown_msg(upb_json_parser *p, upb_wellknowntype_t type);
-static bool is_wellknown_field(upb_json_parser *p, upb_wellknowntype_t type);
-
-static bool is_number_wrapper_object(upb_json_parser *p);
-static bool does_number_wrapper_start(upb_json_parser *p);
-static bool does_number_wrapper_end(upb_json_parser *p);
-
-static bool is_string_wrapper_object(upb_json_parser *p);
-static bool does_string_wrapper_start(upb_json_parser *p);
-static bool does_string_wrapper_end(upb_json_parser *p);
-
-static bool does_fieldmask_start(upb_json_parser *p);
-static bool does_fieldmask_end(upb_json_parser *p);
-static void start_fieldmask_object(upb_json_parser *p);
-static void end_fieldmask_object(upb_json_parser *p);
-
-static void start_wrapper_object(upb_json_parser *p);
-static void end_wrapper_object(upb_json_parser *p);
-
-static void start_value_object(upb_json_parser *p, int value_type);
-static void end_value_object(upb_json_parser *p);
-
-static void start_listvalue_object(upb_json_parser *p);
-static void end_listvalue_object(upb_json_parser *p);
-
-static void start_structvalue_object(upb_json_parser *p);
-static void end_structvalue_object(upb_json_parser *p);
-
-static void start_object(upb_json_parser *p);
-static void end_object(upb_json_parser *p);
-
-static void start_any_object(upb_json_parser *p, const char *ptr);
-static bool end_any_object(upb_json_parser *p, const char *ptr);
-
-static bool start_subobject(upb_json_parser *p);
-static void end_subobject(upb_json_parser *p);
-
-static void start_member(upb_json_parser *p);
-static void end_member(upb_json_parser *p);
-static bool end_membername(upb_json_parser *p);
-
-static void start_any_member(upb_json_parser *p, const char *ptr);
-static void end_any_member(upb_json_parser *p, const char *ptr);
-static bool end_any_membername(upb_json_parser *p);
-
-size_t parse(void *closure, const void *hd, const char *buf, size_t size,
-             const upb_bufhandle *handle);
-static bool end(void *closure, const void *hd);
-
-static const char eof_ch = 'e';
-
-/* stringsink */
-typedef struct {
-  upb_byteshandler handler;
-  upb_bytessink sink;
-  char *ptr;
-  size_t len, size;
-} upb_stringsink;
-
-
-static void *stringsink_start(void *_sink, const void *hd, size_t size_hint) {
-  upb_stringsink *sink = _sink;
-  sink->len = 0;
-  UPB_UNUSED(hd);
-  UPB_UNUSED(size_hint);
-  return sink;
-}
-
-static size_t stringsink_string(void *_sink, const void *hd, const char *ptr,
-                                size_t len, const upb_bufhandle *handle) {
-  upb_stringsink *sink = _sink;
-  size_t new_size = sink->size;
-
-  UPB_UNUSED(hd);
-  UPB_UNUSED(handle);
-
-  while (sink->len + len > new_size) {
-    new_size *= 2;
-  }
-
-  if (new_size != sink->size) {
-    sink->ptr = realloc(sink->ptr, new_size);
-    sink->size = new_size;
-  }
-
-  memcpy(sink->ptr + sink->len, ptr, len);
-  sink->len += len;
-
-  return len;
-}
-
-void upb_stringsink_init(upb_stringsink *sink) {
-  upb_byteshandler_init(&sink->handler);
-  upb_byteshandler_setstartstr(&sink->handler, stringsink_start, NULL);
-  upb_byteshandler_setstring(&sink->handler, stringsink_string, NULL);
-
-  upb_bytessink_reset(&sink->sink, &sink->handler, sink);
-
-  sink->size = 32;
-  sink->ptr = malloc(sink->size);
-  sink->len = 0;
-}
-
-void upb_stringsink_uninit(upb_stringsink *sink) { free(sink->ptr); }
-
-typedef struct {
-  /* For encoding Any value field in binary format. */
-  upb_handlercache *encoder_handlercache;
-  upb_stringsink stringsink;
-
-  /* For decoding Any value field in json format. */
-  upb_json_codecache *parser_codecache;
-  upb_sink sink;
-  upb_json_parser *parser;
-
-  /* Mark the range of uninterpreted values in json input before type url. */
-  const char *before_type_url_start;
-  const char *before_type_url_end;
-
-  /* Mark the range of uninterpreted values in json input after type url. */
-  const char *after_type_url_start;
-} upb_jsonparser_any_frame;
-
-typedef struct {
-  upb_sink sink;
-
-  /* The current message in which we're parsing, and the field whose value we're
-   * expecting next. */
-  const upb_msgdef *m;
-  const upb_fielddef *f;
-
-  /* The table mapping json name to fielddef for this message. */
-  const upb_strtable *name_table;
-
-  /* We are in a repeated-field context. We need this flag to decide whether to
-   * handle the array as a normal repeated field or a
-   * google.protobuf.ListValue/google.protobuf.Value. */
-  bool is_repeated;
-
-  /* We are in a repeated-field context, ready to emit mapentries as
-   * submessages. This flag alters the start-of-object (open-brace) behavior to
-   * begin a sequence of mapentry messages rather than a single submessage. */
-  bool is_map;
-
-  /* We are in a map-entry message context. This flag is set when parsing the
-   * value field of a single map entry and indicates to all value-field parsers
-   * (subobjects, strings, numbers, and bools) that the map-entry submessage
-   * should end as soon as the value is parsed. */
-  bool is_mapentry;
-
-  /* If |is_map| or |is_mapentry| is true, |mapfield| refers to the parent
-   * message's map field that we're currently parsing. This differs from |f|
-   * because |f| is the field in the *current* message (i.e., the map-entry
-   * message itself), not the parent's field that leads to this map. */
-  const upb_fielddef *mapfield;
-
-  /* We are in an Any message context. This flag is set when parsing the Any
-   * message and indicates to all field parsers (subobjects, strings, numbers,
-   * and bools) that the parsed field should be serialized as binary data or
-   * cached (type url not found yet). */
-  bool is_any;
-
-  /* The type of packed message in Any. */
-  upb_jsonparser_any_frame *any_frame;
-
-  /* True if the field to be parsed is unknown. */
-  bool is_unknown_field;
-} upb_jsonparser_frame;
-
-static void init_frame(upb_jsonparser_frame* frame) {
-  frame->m = NULL;
-  frame->f = NULL;
-  frame->name_table = NULL;
-  frame->is_repeated = false;
-  frame->is_map = false;
-  frame->is_mapentry = false;
-  frame->mapfield = NULL;
-  frame->is_any = false;
-  frame->any_frame = NULL;
-  frame->is_unknown_field = false;
-}
-
-struct upb_json_parser {
-  upb_arena *arena;
-  const upb_json_parsermethod *method;
-  upb_bytessink input_;
-
-  /* Stack to track the JSON scopes we are in. */
-  upb_jsonparser_frame stack[UPB_JSON_MAX_DEPTH];
-  upb_jsonparser_frame *top;
-  upb_jsonparser_frame *limit;
-
-  upb_status *status;
-
-  /* Ragel's internal parsing stack for the parsing state machine. */
-  int current_state;
-  int parser_stack[UPB_JSON_MAX_DEPTH];
-  int parser_top;
-
-  /* The handle for the current buffer. */
-  const upb_bufhandle *handle;
-
-  /* Accumulate buffer.  See details in parser.rl. */
-  const char *accumulated;
-  size_t accumulated_len;
-  char *accumulate_buf;
-  size_t accumulate_buf_size;
-
-  /* Multi-part text data.  See details in parser.rl. */
-  int multipart_state;
-  upb_selector_t string_selector;
-
-  /* Input capture.  See details in parser.rl. */
-  const char *capture;
-
-  /* Intermediate result of parsing a unicode escape sequence. */
-  uint32_t digit;
-
-  /* For resolve type url in Any. */
-  const upb_symtab *symtab;
-
-  /* Whether to proceed if unknown field is met. */
-  bool ignore_json_unknown;
-
-  /* Cache for parsing timestamp due to base and zone are handled in different
-   * handlers. */
-  struct tm tm;
-};
-
-static upb_jsonparser_frame* start_jsonparser_frame(upb_json_parser *p) {
-  upb_jsonparser_frame *inner;
-  inner = p->top + 1;
-  init_frame(inner);
-  return inner;
-}
-
-struct upb_json_codecache {
-  upb_arena *arena;
-  upb_inttable methods;   /* upb_msgdef* -> upb_json_parsermethod* */
-};
-
-struct upb_json_parsermethod {
-  const upb_json_codecache *cache;
-  upb_byteshandler input_handler_;
-
-  /* Maps json_name -> fielddef */
-  upb_strtable name_table;
-};
-
-#define PARSER_CHECK_RETURN(x) if (!(x)) return false
-
-static upb_jsonparser_any_frame *json_parser_any_frame_new(
-    upb_json_parser *p) {
-  upb_jsonparser_any_frame *frame;
-
-  frame = upb_arena_malloc(p->arena, sizeof(upb_jsonparser_any_frame));
-
-  frame->encoder_handlercache = upb_pb_encoder_newcache();
-  frame->parser_codecache = upb_json_codecache_new();
-  frame->parser = NULL;
-  frame->before_type_url_start = NULL;
-  frame->before_type_url_end = NULL;
-  frame->after_type_url_start = NULL;
-
-  upb_stringsink_init(&frame->stringsink);
-
-  return frame;
-}
-
-static void json_parser_any_frame_set_payload_type(
-    upb_json_parser *p,
-    upb_jsonparser_any_frame *frame,
-    const upb_msgdef *payload_type) {
-  const upb_handlers *h;
-  const upb_json_parsermethod *parser_method;
-  upb_pb_encoder *encoder;
-
-  /* Initialize encoder. */
-  h = upb_handlercache_get(frame->encoder_handlercache, payload_type);
-  encoder = upb_pb_encoder_create(p->arena, h, frame->stringsink.sink);
-
-  /* Initialize parser. */
-  parser_method = upb_json_codecache_get(frame->parser_codecache, payload_type);
-  upb_sink_reset(&frame->sink, h, encoder);
-  frame->parser =
-      upb_json_parser_create(p->arena, parser_method, p->symtab, frame->sink,
-                             p->status, p->ignore_json_unknown);
-}
-
-static void json_parser_any_frame_free(upb_jsonparser_any_frame *frame) {
-  upb_handlercache_free(frame->encoder_handlercache);
-  upb_json_codecache_free(frame->parser_codecache);
-  upb_stringsink_uninit(&frame->stringsink);
-}
-
-static bool json_parser_any_frame_has_type_url(
-  upb_jsonparser_any_frame *frame) {
-  return frame->parser != NULL;
-}
-
-static bool json_parser_any_frame_has_value_before_type_url(
-  upb_jsonparser_any_frame *frame) {
-  return frame->before_type_url_start != frame->before_type_url_end;
-}
-
-static bool json_parser_any_frame_has_value_after_type_url(
-  upb_jsonparser_any_frame *frame) {
-  return frame->after_type_url_start != NULL;
-}
-
-static bool json_parser_any_frame_has_value(
-  upb_jsonparser_any_frame *frame) {
-  return json_parser_any_frame_has_value_before_type_url(frame) ||
-         json_parser_any_frame_has_value_after_type_url(frame);
-}
-
-static void json_parser_any_frame_set_before_type_url_end(
-    upb_jsonparser_any_frame *frame,
-    const char *ptr) {
-  if (frame->parser == NULL) {
-    frame->before_type_url_end = ptr;
-  }
-}
-
-static void json_parser_any_frame_set_after_type_url_start_once(
-    upb_jsonparser_any_frame *frame,
-    const char *ptr) {
-  if (json_parser_any_frame_has_type_url(frame) &&
-      frame->after_type_url_start == NULL) {
-    frame->after_type_url_start = ptr;
-  }
-}
-
-/* Used to signal that a capture has been suspended. */
-static char suspend_capture;
-
-static upb_selector_t getsel_for_handlertype(upb_json_parser *p,
-                                             upb_handlertype_t type) {
-  upb_selector_t sel;
-  bool ok = upb_handlers_getselector(p->top->f, type, &sel);
-  UPB_ASSERT(ok);
-  return sel;
-}
-
-static upb_selector_t parser_getsel(upb_json_parser *p) {
-  return getsel_for_handlertype(
-      p, upb_handlers_getprimitivehandlertype(p->top->f));
-}
-
-static bool check_stack(upb_json_parser *p) {
-  if ((p->top + 1) == p->limit) {
-    upb_status_seterrmsg(p->status, "Nesting too deep");
-    return false;
-  }
-
-  return true;
-}
-
-static void set_name_table(upb_json_parser *p, upb_jsonparser_frame *frame) {
-  upb_value v;
-  const upb_json_codecache *cache = p->method->cache;
-  bool ok;
-  const upb_json_parsermethod *method;
-
-  ok = upb_inttable_lookupptr(&cache->methods, frame->m, &v);
-  UPB_ASSERT(ok);
-  method = upb_value_getconstptr(v);
-
-  frame->name_table = &method->name_table;
-}
-
-/* There are GCC/Clang built-ins for overflow checking which we could start
- * using if there was any performance benefit to it. */
-
-static bool checked_add(size_t a, size_t b, size_t *c) {
-  if (SIZE_MAX - a < b) return false;
-  *c = a + b;
-  return true;
-}
-
-static size_t saturating_multiply(size_t a, size_t b) {
-  /* size_t is unsigned, so this is defined behavior even on overflow. */
-  size_t ret = a * b;
-  if (b != 0 && ret / b != a) {
-    ret = SIZE_MAX;
+upb_mutmsgval upb_msg_mutable(upb_msg *msg, const upb_fielddef *f,
+                              upb_arena *a) {
+  const upb_msglayout_field *field = upb_fielddef_layout(f);
+  upb_mutmsgval ret;
+  char *mem = PTR_AT(msg, field->offset, char);
+  bool wrong_oneof = in_oneof(field) && *oneofcase(msg, field) != field->number;
+
+  memcpy(&ret, mem, sizeof(void*));
+
+  if (a && (!ret.msg || wrong_oneof)) {
+    if (upb_fielddef_ismap(f)) {
+      const upb_msgdef *entry = upb_fielddef_msgsubdef(f);
+      const upb_fielddef *key = upb_msgdef_itof(entry, UPB_MAPENTRY_KEY);
+      const upb_fielddef *value = upb_msgdef_itof(entry, UPB_MAPENTRY_VALUE);
+      ret.map = upb_map_new(a, upb_fielddef_type(key), upb_fielddef_type(value));
+    } else if (upb_fielddef_isseq(f)) {
+      ret.array = upb_array_new(a, upb_fielddef_type(f));
+    } else {
+      UPB_ASSERT(upb_fielddef_issubmsg(f));
+      ret.msg = upb_msg_new(upb_fielddef_msgsubdef(f), a);
+    }
+
+    memcpy(mem, &ret, sizeof(void*));
+
+    if (wrong_oneof) {
+      *oneofcase(msg, field) = field->number;
+    }
   }
   return ret;
 }
 
-
-/* Base64 decoding ************************************************************/
-
-/* TODO(haberman): make this streaming. */
-
-static const signed char b64table[] = {
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      62/*+*/, -1,      -1,      -1,      63/*/ */,
-  52/*0*/, 53/*1*/, 54/*2*/, 55/*3*/, 56/*4*/, 57/*5*/, 58/*6*/, 59/*7*/,
-  60/*8*/, 61/*9*/, -1,      -1,      -1,      -1,      -1,      -1,
-  -1,       0/*A*/,  1/*B*/,  2/*C*/,  3/*D*/,  4/*E*/,  5/*F*/,  6/*G*/,
-  07/*H*/,  8/*I*/,  9/*J*/, 10/*K*/, 11/*L*/, 12/*M*/, 13/*N*/, 14/*O*/,
-  15/*P*/, 16/*Q*/, 17/*R*/, 18/*S*/, 19/*T*/, 20/*U*/, 21/*V*/, 22/*W*/,
-  23/*X*/, 24/*Y*/, 25/*Z*/, -1,      -1,      -1,      -1,      -1,
-  -1,      26/*a*/, 27/*b*/, 28/*c*/, 29/*d*/, 30/*e*/, 31/*f*/, 32/*g*/,
-  33/*h*/, 34/*i*/, 35/*j*/, 36/*k*/, 37/*l*/, 38/*m*/, 39/*n*/, 40/*o*/,
-  41/*p*/, 42/*q*/, 43/*r*/, 44/*s*/, 45/*t*/, 46/*u*/, 47/*v*/, 48/*w*/,
-  49/*x*/, 50/*y*/, 51/*z*/, -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1,
-  -1,      -1,      -1,      -1,      -1,      -1,      -1,      -1
-};
-
-/* Returns the table value sign-extended to 32 bits.  Knowing that the upper
- * bits will be 1 for unrecognized characters makes it easier to check for
- * this error condition later (see below). */
-int32_t b64lookup(unsigned char ch) { return b64table[ch]; }
-
-/* Returns true if the given character is not a valid base64 character or
- * padding. */
-bool nonbase64(unsigned char ch) { return b64lookup(ch) == -1 && ch != '='; }
-
-static bool base64_push(upb_json_parser *p, upb_selector_t sel, const char *ptr,
-                        size_t len) {
-  const char *limit = ptr + len;
-  for (; ptr < limit; ptr += 4) {
-    uint32_t val;
-    char output[3];
-
-    if (limit - ptr < 4) {
-      upb_status_seterrf(p->status,
-                         "Base64 input for bytes field not a multiple of 4: %s",
-                         upb_fielddef_name(p->top->f));
-      return false;
-    }
-
-    val = b64lookup(ptr[0]) << 18 |
-          b64lookup(ptr[1]) << 12 |
-          b64lookup(ptr[2]) << 6  |
-          b64lookup(ptr[3]);
-
-    /* Test the upper bit; returns true if any of the characters returned -1. */
-    if (val & 0x80000000) {
-      goto otherchar;
-    }
-
-    output[0] = val >> 16;
-    output[1] = (val >> 8) & 0xff;
-    output[2] = val & 0xff;
-    upb_sink_putstring(p->top->sink, sel, output, 3, NULL);
+void upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
+                 upb_arena *a) {
+  const upb_msglayout_field *field = upb_fielddef_layout(f);
+  char *mem = PTR_AT(msg, field->offset, char);
+  int size = upb_fielddef_isseq(f) ? sizeof(void *)
+                                   : field_size[field->descriptortype];
+  memcpy(mem, &val, size);
+  if (in_oneof(field)) {
+    *oneofcase(msg, field) = field->number;
   }
-  return true;
+}
 
-otherchar:
-  if (nonbase64(ptr[0]) || nonbase64(ptr[1]) || nonbase64(ptr[2]) ||
-      nonbase64(ptr[3]) ) {
-    upb_status_seterrf(p->status,
-                       "Non-base64 characters in bytes field: %s",
-                       upb_fielddef_name(p->top->f));
-    return false;
-  } if (ptr[2] == '=') {
-    uint32_t val;
-    char output;
+bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
+                  const upb_symtab *ext_pool, const upb_fielddef **out_f,
+                  upb_msgval *out_val, size_t *iter) {
+  size_t i = *iter;
+  const upb_msgval zero = {0};
+  const upb_fielddef *f;
+  while ((f = _upb_msgdef_field(m, (int)++i)) != NULL) {
+    upb_msgval val = _upb_msg_getraw(msg, f);
 
-    /* Last group contains only two input bytes, one output byte. */
-    if (ptr[0] == '=' || ptr[1] == '=' || ptr[3] != '=') {
-      goto badpadding;
+    /* Skip field if unset or empty. */
+    if (upb_fielddef_haspresence(f)) {
+      if (!upb_msg_has(msg, f)) continue;
+    } else {
+      upb_msgval test = val;
+      if (upb_fielddef_isstring(f) && !upb_fielddef_isseq(f)) {
+        /* Clear string pointer, only size matters (ptr could be non-NULL). */
+        test.str_val.data = NULL;
+      }
+      /* Continue if NULL or 0. */
+      if (memcmp(&test, &zero, sizeof(test)) == 0) continue;
+
+      /* Continue on empty array or map. */
+      if (upb_fielddef_ismap(f)) {
+        if (upb_map_size(test.map_val) == 0) continue;
+      } else if (upb_fielddef_isseq(f)) {
+        if (upb_array_size(test.array_val) == 0) continue;
+      }
     }
 
-    val = b64lookup(ptr[0]) << 18 |
-          b64lookup(ptr[1]) << 12;
-
-    UPB_ASSERT(!(val & 0x80000000));
-    output = val >> 16;
-    upb_sink_putstring(p->top->sink, sel, &output, 1, NULL);
-    return true;
-  } else {
-    uint32_t val;
-    char output[2];
-
-    /* Last group contains only three input bytes, two output bytes. */
-    if (ptr[0] == '=' || ptr[1] == '=' || ptr[2] == '=') {
-      goto badpadding;
-    }
-
-    val = b64lookup(ptr[0]) << 18 |
-          b64lookup(ptr[1]) << 12 |
-          b64lookup(ptr[2]) << 6;
-
-    output[0] = val >> 16;
-    output[1] = (val >> 8) & 0xff;
-    upb_sink_putstring(p->top->sink, sel, output, 2, NULL);
+    *out_val = val;
+    *out_f = f;
+    *iter = i;
     return true;
   }
-
-badpadding:
-  upb_status_seterrf(p->status,
-                     "Incorrect base64 padding for field: %s (%.*s)",
-                     upb_fielddef_name(p->top->f),
-                     4, ptr);
+  *iter = i;
   return false;
 }
 
+/** upb_array *****************************************************************/
 
-/* Accumulate buffer **********************************************************/
-
-/* Functionality for accumulating a buffer.
- *
- * Some parts of the parser need an entire value as a contiguous string.  For
- * example, to look up a member name in a hash table, or to turn a string into
- * a number, the relevant library routines need the input string to be in
- * contiguous memory, even if the value spanned two or more buffers in the
- * input.  These routines handle that.
- *
- * In the common case we can just point to the input buffer to get this
- * contiguous string and avoid any actual copy.  So we optimistically begin
- * this way.  But there are a few cases where we must instead copy into a
- * separate buffer:
- *
- *   1. The string was not contiguous in the input (it spanned buffers).
- *
- *   2. The string included escape sequences that need to be interpreted to get
- *      the true value in a contiguous buffer. */
-
-static void assert_accumulate_empty(upb_json_parser *p) {
-  UPB_ASSERT(p->accumulated == NULL);
-  UPB_ASSERT(p->accumulated_len == 0);
+upb_array *upb_array_new(upb_arena *a, upb_fieldtype_t type) {
+  return _upb_array_new(a, type);
 }
 
-static void accumulate_clear(upb_json_parser *p) {
-  p->accumulated = NULL;
-  p->accumulated_len = 0;
+size_t upb_array_size(const upb_array *arr) {
+  return arr->len;
 }
 
-/* Used internally by accumulate_append(). */
-static bool accumulate_realloc(upb_json_parser *p, size_t need) {
-  void *mem;
-  size_t old_size = p->accumulate_buf_size;
-  size_t new_size = UPB_MAX(old_size, 128);
-  while (new_size < need) {
-    new_size = saturating_multiply(new_size, 2);
-  }
+upb_msgval upb_array_get(const upb_array *arr, size_t i) {
+  upb_msgval ret;
+  const char* data = _upb_array_constptr(arr);
+  int lg2 = arr->data & 7;
+  UPB_ASSERT(i < arr->len);
+  memcpy(&ret, data + (i << lg2), 1 << lg2);
+  return ret;
+}
 
-  mem = upb_arena_realloc(p->arena, p->accumulate_buf, old_size, new_size);
-  if (!mem) {
-    upb_status_seterrmsg(p->status, "Out of memory allocating buffer.");
+void upb_array_set(upb_array *arr, size_t i, upb_msgval val) {
+  char* data = _upb_array_ptr(arr);
+  int lg2 = arr->data & 7;
+  UPB_ASSERT(i < arr->len);
+  memcpy(data + (i << lg2), &val, 1 << lg2);
+}
+
+bool upb_array_append(upb_array *arr, upb_msgval val, upb_arena *arena) {
+  if (!_upb_array_realloc(arr, arr->len + 1, arena)) {
     return false;
   }
-
-  p->accumulate_buf = mem;
-  p->accumulate_buf_size = new_size;
+  arr->len++;
+  upb_array_set(arr, arr->len - 1, val);
   return true;
 }
 
-/* Logically appends the given data to the append buffer.
- * If "can_alias" is true, we will try to avoid actually copying, but the buffer
- * must be valid until the next accumulate_append() call (if any). */
-static bool accumulate_append(upb_json_parser *p, const char *buf, size_t len,
-                              bool can_alias) {
-  size_t need;
-
-  if (!p->accumulated && can_alias) {
-    p->accumulated = buf;
-    p->accumulated_len = len;
-    return true;
-  }
-
-  if (!checked_add(p->accumulated_len, len, &need)) {
-    upb_status_seterrmsg(p->status, "Integer overflow.");
-    return false;
-  }
-
-  if (need > p->accumulate_buf_size && !accumulate_realloc(p, need)) {
-    return false;
-  }
-
-  if (p->accumulated != p->accumulate_buf) {
-    memcpy(p->accumulate_buf, p->accumulated, p->accumulated_len);
-    p->accumulated = p->accumulate_buf;
-  }
-
-  memcpy(p->accumulate_buf + p->accumulated_len, buf, len);
-  p->accumulated_len += len;
-  return true;
+/* Resizes the array to the given size, reallocating if necessary, and returns a
+ * pointer to the new array elements. */
+bool upb_array_resize(upb_array *arr, size_t size, upb_arena *arena) {
+  return _upb_array_realloc(arr, size, arena);
 }
 
-/* Returns a pointer to the data accumulated since the last accumulate_clear()
- * call, and writes the length to *len.  This with point either to the input
- * buffer or a temporary accumulate buffer. */
-static const char *accumulate_getptr(upb_json_parser *p, size_t *len) {
-  UPB_ASSERT(p->accumulated);
-  *len = p->accumulated_len;
-  return p->accumulated;
+/** upb_map *******************************************************************/
+
+upb_map *upb_map_new(upb_arena *a, upb_fieldtype_t key_type,
+                     upb_fieldtype_t value_type) {
+  return _upb_map_new(a, _upb_fieldtype_to_mapsize[key_type],
+                      _upb_fieldtype_to_mapsize[value_type]);
 }
 
-
-/* Mult-part text data ********************************************************/
-
-/* When we have text data in the input, it can often come in multiple segments.
- * For example, there may be some raw string data followed by an escape
- * sequence.  The two segments are processed with different logic.  Also buffer
- * seams in the input can cause multiple segments.
- *
- * As we see segments, there are two main cases for how we want to process them:
- *
- *  1. we want to push the captured input directly to string handlers.
- *
- *  2. we need to accumulate all the parts into a contiguous buffer for further
- *     processing (field name lookup, string->number conversion, etc). */
-
-/* This is the set of states for p->multipart_state. */
-enum {
-  /* We are not currently processing multipart data. */
-  MULTIPART_INACTIVE = 0,
-
-  /* We are processing multipart data by accumulating it into a contiguous
-   * buffer. */
-  MULTIPART_ACCUMULATE = 1,
-
-  /* We are processing multipart data by pushing each part directly to the
-   * current string handlers. */
-  MULTIPART_PUSHEAGERLY = 2
-};
-
-/* Start a multi-part text value where we accumulate the data for processing at
- * the end. */
-static void multipart_startaccum(upb_json_parser *p) {
-  assert_accumulate_empty(p);
-  UPB_ASSERT(p->multipart_state == MULTIPART_INACTIVE);
-  p->multipart_state = MULTIPART_ACCUMULATE;
+size_t upb_map_size(const upb_map *map) {
+  return _upb_map_size(map);
 }
 
-/* Start a multi-part text value where we immediately push text data to a string
- * value with the given selector. */
-static void multipart_start(upb_json_parser *p, upb_selector_t sel) {
-  assert_accumulate_empty(p);
-  UPB_ASSERT(p->multipart_state == MULTIPART_INACTIVE);
-  p->multipart_state = MULTIPART_PUSHEAGERLY;
-  p->string_selector = sel;
+bool upb_map_get(const upb_map *map, upb_msgval key, upb_msgval *val) {
+  return _upb_map_get(map, &key, map->key_size, val, map->val_size);
 }
 
-static bool multipart_text(upb_json_parser *p, const char *buf, size_t len,
-                           bool can_alias) {
-  switch (p->multipart_state) {
-    case MULTIPART_INACTIVE:
-      upb_status_seterrmsg(
-          p->status, "Internal error: unexpected state MULTIPART_INACTIVE");
-      return false;
+bool upb_map_set(upb_map *map, upb_msgval key, upb_msgval val,
+                 upb_arena *arena) {
+  return _upb_map_set(map, &key, map->key_size, &val, map->val_size, arena);
+}
 
-    case MULTIPART_ACCUMULATE:
-      if (!accumulate_append(p, buf, len, can_alias)) {
-        return false;
-      }
-      break;
+bool upb_map_delete(upb_map *map, upb_msgval key) {
+  return _upb_map_delete(map, &key, map->key_size);
+}
 
-    case MULTIPART_PUSHEAGERLY: {
-      const upb_bufhandle *handle = can_alias ? p->handle : NULL;
-      upb_sink_putstring(p->top->sink, p->string_selector, buf, len, handle);
-      break;
+bool upb_mapiter_next(const upb_map *map, size_t *iter) {
+  return _upb_map_next(map, iter);
+}
+
+/* Returns the key and value for this entry of the map. */
+upb_msgval upb_mapiter_key(const upb_map *map, size_t iter) {
+  upb_strtable_iter i;
+  upb_msgval ret;
+  i.t = &map->table;
+  i.index = iter;
+  _upb_map_fromkey(upb_strtable_iter_key(&i), &ret, map->key_size);
+  return ret;
+}
+
+upb_msgval upb_mapiter_value(const upb_map *map, size_t iter) {
+  upb_strtable_iter i;
+  upb_msgval ret;
+  i.t = &map->table;
+  i.index = iter;
+  _upb_map_fromvalue(upb_strtable_iter_value(&i), &ret, map->val_size);
+  return ret;
+}
+
+/* void upb_mapiter_setvalue(upb_map *map, size_t iter, upb_msgval value); */
+
+
+#ifdef UPB_MSVC_VSNPRINTF
+/* Visual C++ earlier than 2015 doesn't have standard C99 snprintf and
+ * vsnprintf. To support them, missing functions are manually implemented
+ * using the existing secure functions. */
+int msvc_vsnprintf(char* s, size_t n, const char* format, va_list arg) {
+  if (!s) {
+    return _vscprintf(format, arg);
+  }
+  int ret = _vsnprintf_s(s, n, _TRUNCATE, format, arg);
+  if (ret < 0) {
+	ret = _vscprintf(format, arg);
+  }
+  return ret;
+}
+
+int msvc_snprintf(char* s, size_t n, const char* format, ...) {
+  va_list arg;
+  va_start(arg, format);
+  int ret = msvc_vsnprintf(s, n, format, arg);
+  va_end(arg);
+  return ret;
+}
+#endif
+
+
+#include <errno.h>
+#include <float.h>
+#include <inttypes.h>
+#include <setjmp.h>
+#include <stdlib.h>
+#include <string.h>
+
+
+/* Special header, must be included last. */
+
+typedef struct {
+  const char *ptr, *end;
+  upb_arena *arena;  /* TODO: should we have a tmp arena for tmp data? */
+  const upb_symtab *any_pool;
+  int depth;
+  upb_status *status;
+  jmp_buf err;
+  int line;
+  const char *line_begin;
+  bool is_first;
+  int options;
+  const upb_fielddef *debug_field;
+} jsondec;
+
+enum { JD_OBJECT, JD_ARRAY, JD_STRING, JD_NUMBER, JD_TRUE, JD_FALSE, JD_NULL };
+
+/* Forward declarations of mutually-recursive functions. */
+static void jsondec_wellknown(jsondec *d, upb_msg *msg, const upb_msgdef *m);
+static upb_msgval jsondec_value(jsondec *d, const upb_fielddef *f);
+static void jsondec_wellknownvalue(jsondec *d, upb_msg *msg,
+                                   const upb_msgdef *m);
+static void jsondec_object(jsondec *d, upb_msg *msg, const upb_msgdef *m);
+
+static bool jsondec_streql(upb_strview str, const char *lit) {
+  return str.size == strlen(lit) && memcmp(str.data, lit, str.size) == 0;
+}
+
+UPB_NORETURN static void jsondec_err(jsondec *d, const char *msg) {
+  upb_status_seterrmsg(d->status, msg);
+  longjmp(d->err, 1);
+}
+
+UPB_NORETURN static void jsondec_errf(jsondec *d, const char *fmt, ...) {
+  va_list argp;
+  va_start(argp, fmt);
+  upb_status_vseterrf(d->status, fmt, argp);
+  va_end(argp);
+  longjmp(d->err, 1);
+}
+
+static void jsondec_skipws(jsondec *d) {
+  while (d->ptr != d->end) {
+    switch (*d->ptr) {
+      case '\n':
+        d->line++;
+        d->line_begin = d->ptr;
+        /* Fallthrough. */
+      case '\r':
+      case '\t':
+      case ' ':
+        d->ptr++;
+        break;
+      default:
+        return;
     }
   }
+  jsondec_err(d, "Unexpected EOF");
+}
 
+static bool jsondec_tryparsech(jsondec *d, char ch) {
+  if (d->ptr == d->end || *d->ptr != ch) return false;
+  d->ptr++;
   return true;
 }
 
-/* Note: this invalidates the accumulate buffer!  Call only after reading its
- * contents. */
-static void multipart_end(upb_json_parser *p) {
-  UPB_ASSERT(p->multipart_state != MULTIPART_INACTIVE);
-  p->multipart_state = MULTIPART_INACTIVE;
-  accumulate_clear(p);
+static void jsondec_parselit(jsondec *d, const char *lit) {
+  size_t len = strlen(lit);
+  if (d->end - d->ptr < len || memcmp(d->ptr, lit, len) != 0) {
+    jsondec_errf(d, "Expected: '%s'", lit);
+  }
+  d->ptr += len;
 }
 
-
-/* Input capture **************************************************************/
-
-/* Functionality for capturing a region of the input as text.  Gracefully
- * handles the case where a buffer seam occurs in the middle of the captured
- * region. */
-
-static void capture_begin(upb_json_parser *p, const char *ptr) {
-  UPB_ASSERT(p->multipart_state != MULTIPART_INACTIVE);
-  UPB_ASSERT(p->capture == NULL);
-  p->capture = ptr;
-}
-
-static bool capture_end(upb_json_parser *p, const char *ptr) {
-  UPB_ASSERT(p->capture);
-  if (multipart_text(p, p->capture, ptr - p->capture, true)) {
-    p->capture = NULL;
-    return true;
-  } else {
-    return false;
+static void jsondec_wsch(jsondec *d, char ch) {
+  jsondec_skipws(d);
+  if (!jsondec_tryparsech(d, ch)) {
+    jsondec_errf(d, "Expected: '%c'", ch);
   }
 }
 
-/* This is called at the end of each input buffer (ie. when we have hit a
- * buffer seam).  If we are in the middle of capturing the input, this
- * processes the unprocessed capture region. */
-static void capture_suspend(upb_json_parser *p, const char **ptr) {
-  if (!p->capture) return;
+static void jsondec_true(jsondec *d) { jsondec_parselit(d, "true"); }
+static void jsondec_false(jsondec *d) { jsondec_parselit(d, "false"); }
+static void jsondec_null(jsondec *d) { jsondec_parselit(d, "null"); }
 
-  if (multipart_text(p, p->capture, *ptr - p->capture, false)) {
-    /* We use this as a signal that we were in the middle of capturing, and
-     * that capturing should resume at the beginning of the next buffer.
-     * 
-     * We can't use *ptr here, because we have no guarantee that this pointer
-     * will be valid when we resume (if the underlying memory is freed, then
-     * using the pointer at all, even to compare to NULL, is likely undefined
-     * behavior). */
-    p->capture = &suspend_capture;
-  } else {
-    /* Need to back up the pointer to the beginning of the capture, since
-     * we were not able to actually preserve it. */
-    *ptr = p->capture;
-  }
+static void jsondec_entrysep(jsondec *d) {
+  jsondec_skipws(d);
+  jsondec_parselit(d, ":");
 }
 
-static void capture_resume(upb_json_parser *p, const char *ptr) {
-  if (p->capture) {
-    UPB_ASSERT(p->capture == &suspend_capture);
-    p->capture = ptr;
-  }
-}
-
-
-/* Callbacks from the parser **************************************************/
-
-/* These are the functions called directly from the parser itself.
- * We define these in the same order as their declarations in the parser. */
-
-static char escape_char(char in) {
-  switch (in) {
-    case 'r': return '\r';
-    case 't': return '\t';
-    case 'n': return '\n';
-    case 'f': return '\f';
-    case 'b': return '\b';
-    case '/': return '/';
-    case '"': return '"';
-    case '\\': return '\\';
+static int jsondec_rawpeek(jsondec *d) {
+  switch (*d->ptr) {
+    case '{':
+      return JD_OBJECT;
+    case '[':
+      return JD_ARRAY;
+    case '"':
+      return JD_STRING;
+    case '-':
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
+      return JD_NUMBER;
+    case 't':
+      return JD_TRUE;
+    case 'f':
+      return JD_FALSE;
+    case 'n':
+      return JD_NULL;
     default:
-      UPB_ASSERT(0);
-      return 'x';
+      jsondec_errf(d, "Unexpected character: '%c'", *d->ptr);
   }
 }
 
-static bool escape(upb_json_parser *p, const char *ptr) {
-  char ch = escape_char(*ptr);
-  return multipart_text(p, &ch, 1, false);
+/* JSON object/array **********************************************************/
+
+/* These are used like so:
+ *
+ * jsondec_objstart(d);
+ * while (jsondec_objnext(d)) {
+ *   ...
+ * }
+ * jsondec_objend(d) */
+
+static int jsondec_peek(jsondec *d) {
+  jsondec_skipws(d);
+  return jsondec_rawpeek(d);
 }
 
-static void start_hex(upb_json_parser *p) {
-  p->digit = 0;
+static void jsondec_push(jsondec *d) {
+  if (--d->depth < 0) {
+    jsondec_err(d, "Recursion limit exceeded");
+  }
+  d->is_first = true;
 }
 
-static void hexdigit(upb_json_parser *p, const char *ptr) {
-  char ch = *ptr;
+static bool jsondec_seqnext(jsondec *d, char end_ch) {
+  jsondec_skipws(d);
+  if (*d->ptr == end_ch) return false;
 
-  p->digit <<= 4;
-
-  if (ch >= '0' && ch <= '9') {
-    p->digit += (ch - '0');
-  } else if (ch >= 'a' && ch <= 'f') {
-    p->digit += ((ch - 'a') + 10);
+  if (d->is_first) {
+    d->is_first = false;
   } else {
-    UPB_ASSERT(ch >= 'A' && ch <= 'F');
-    p->digit += ((ch - 'A') + 10);
-  }
-}
-
-static bool end_hex(upb_json_parser *p) {
-  uint32_t codepoint = p->digit;
-
-  /* emit the codepoint as UTF-8. */
-  char utf8[3]; /* support \u0000 -- \uFFFF -- need only three bytes. */
-  int length = 0;
-  if (codepoint <= 0x7F) {
-    utf8[0] = codepoint;
-    length = 1;
-  } else if (codepoint <= 0x07FF) {
-    utf8[1] = (codepoint & 0x3F) | 0x80;
-    codepoint >>= 6;
-    utf8[0] = (codepoint & 0x1F) | 0xC0;
-    length = 2;
-  } else /* codepoint <= 0xFFFF */ {
-    utf8[2] = (codepoint & 0x3F) | 0x80;
-    codepoint >>= 6;
-    utf8[1] = (codepoint & 0x3F) | 0x80;
-    codepoint >>= 6;
-    utf8[0] = (codepoint & 0x0F) | 0xE0;
-    length = 3;
-  }
-  /* TODO(haberman): Handle high surrogates: if codepoint is a high surrogate
-   * we have to wait for the next escape to get the full code point). */
-
-  return multipart_text(p, utf8, length, false);
-}
-
-static void start_text(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_text(upb_json_parser *p, const char *ptr) {
-  return capture_end(p, ptr);
-}
-
-static bool start_number(upb_json_parser *p, const char *ptr) {
-  if (is_top_level(p)) {
-    if (is_number_wrapper_object(p)) {
-      start_wrapper_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_NUMBERVALUE);
-    } else {
-      return false;
-    }
-  } else if (does_number_wrapper_start(p)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_wrapper_object(p);
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_value_object(p, VALUE_NUMBERVALUE);
-  }
-
-  multipart_startaccum(p);
-  capture_begin(p, ptr);
-  return true;
-}
-
-static bool parse_number(upb_json_parser *p, bool is_quoted);
-
-static bool end_number_nontop(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-
-  if (p->top->f == NULL) {
-    multipart_end(p);
-    return true;
-  }
-
-  return parse_number(p, false);
-}
-
-static bool end_number(upb_json_parser *p, const char *ptr) {
-  if (!end_number_nontop(p, ptr)) {
-    return false;
-  }
-
-  if (does_number_wrapper_end(p)) {
-    end_wrapper_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-    end_value_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
+    jsondec_parselit(d, ",");
   }
 
   return true;
 }
 
-/* |buf| is NULL-terminated. |buf| itself will never include quotes;
- * |is_quoted| tells us whether this text originally appeared inside quotes. */
-static bool parse_number_from_buffer(upb_json_parser *p, const char *buf,
-                                     bool is_quoted) {
-  size_t len = strlen(buf);
-  const char *bufend = buf + len;
-  char *end;
-  upb_fieldtype_t type = upb_fielddef_type(p->top->f);
-  double val;
-  double dummy;
-  double inf = UPB_INFINITY;
+static void jsondec_arrstart(jsondec *d) {
+  jsondec_push(d);
+  jsondec_wsch(d, '[');
+}
 
+static void jsondec_arrend(jsondec *d) {
+  d->depth++;
+  jsondec_wsch(d, ']');
+}
+
+static bool jsondec_arrnext(jsondec *d) {
+  return jsondec_seqnext(d, ']');
+}
+
+static void jsondec_objstart(jsondec *d) {
+  jsondec_push(d);
+  jsondec_wsch(d, '{');
+}
+
+static void jsondec_objend(jsondec *d) {
+  d->depth++;
+  jsondec_wsch(d, '}');
+}
+
+static bool jsondec_objnext(jsondec *d) {
+  if (!jsondec_seqnext(d, '}')) return false;
+  if (jsondec_peek(d) != JD_STRING) {
+    jsondec_err(d, "Object must start with string");
+  }
+  return true;
+}
+
+/* JSON number ****************************************************************/
+
+static bool jsondec_tryskipdigits(jsondec *d) {
+  const char *start = d->ptr;
+
+  while (d->ptr < d->end) {
+    if (*d->ptr < '0' || *d->ptr > '9') {
+      break;
+    }
+    d->ptr++;
+  }
+
+  return d->ptr != start;
+}
+
+static void jsondec_skipdigits(jsondec *d) {
+  if (!jsondec_tryskipdigits(d)) {
+    jsondec_err(d, "Expected one or more digits");
+  }
+}
+
+static double jsondec_number(jsondec *d) {
+  const char *start = d->ptr;
+
+  assert(jsondec_rawpeek(d) == JD_NUMBER);
+
+  /* Skip over the syntax of a number, as specified by JSON. */
+  if (*d->ptr == '-') d->ptr++;
+
+  if (jsondec_tryparsech(d, '0')) {
+    if (jsondec_tryskipdigits(d)) {
+      jsondec_err(d, "number cannot have leading zero");
+    }
+  } else {
+    jsondec_skipdigits(d);
+  }
+
+  if (d->ptr == d->end) goto parse;
+  if (jsondec_tryparsech(d, '.')) {
+    jsondec_skipdigits(d);
+  }
+  if (d->ptr == d->end) goto parse;
+
+  if (*d->ptr == 'e' || *d->ptr == 'E') {
+    d->ptr++;
+    if (d->ptr == d->end) {
+      jsondec_err(d, "Unexpected EOF in number");
+    }
+    if (*d->ptr == '+' || *d->ptr == '-') {
+      d->ptr++;
+    }
+    jsondec_skipdigits(d);
+  }
+
+parse:
+  /* Having verified the syntax of a JSON number, use strtod() to parse
+   * (strtod() accepts a superset of JSON syntax). */
   errno = 0;
+  {
+    char* end;
+    double val = strtod(start, &end);
+    assert(end == d->ptr);
 
-  if (len == 0 || buf[0] == ' ') {
-    return false;
+    /* Currently the min/max-val conformance tests fail if we check this.  Does
+     * this mean the conformance tests are wrong or strtod() is wrong, or
+     * something else?  Investigate further. */
+    /*
+    if (errno == ERANGE) {
+      jsondec_err(d, "Number out of range");
+    }
+    */
+
+    if (val > DBL_MAX || val < -DBL_MAX) {
+      jsondec_err(d, "Number out of range");
+    }
+
+    return val;
+  }
+}
+
+/* JSON string ****************************************************************/
+
+static char jsondec_escape(jsondec *d) {
+  switch (*d->ptr++) {
+    case '"':
+      return '\"';
+    case '\\':
+      return '\\';
+    case '/':
+      return '/';
+    case 'b':
+      return '\b';
+    case 'f':
+      return '\f';
+    case 'n':
+      return '\n';
+    case 'r':
+      return '\r';
+    case 't':
+      return '\t';
+    default:
+      jsondec_err(d, "Invalid escape char");
+  }
+}
+
+static uint32_t jsondec_codepoint(jsondec *d) {
+  uint32_t cp = 0;
+  const char *end;
+
+  if (d->end - d->ptr < 4) {
+    jsondec_err(d, "EOF inside string");
   }
 
-  /* For integer types, first try parsing with integer-specific routines.
-   * If these succeed, they will be more accurate for int64/uint64 than
-   * strtod().
-   */
-  switch (type) {
-    case UPB_TYPE_ENUM:
-    case UPB_TYPE_INT32: {
-      long val = strtol(buf, &end, 0);
-      if (errno == ERANGE || end != bufend) {
-        break;
-      } else if (val > INT32_MAX || val < INT32_MIN) {
-        return false;
-      } else {
-        upb_sink_putint32(p->top->sink, parser_getsel(p), val);
-        return true;
-      }
+  end = d->ptr + 4;
+  while (d->ptr < end) {
+    char ch = *d->ptr++;
+    if (ch >= '0' && ch <= '9') {
+      ch -= '0';
+    } else if (ch >= 'a' && ch <= 'f') {
+      ch = ch - 'a' + 10;
+    } else if (ch >= 'A' && ch <= 'F') {
+      ch = ch - 'A' + 10;
+    } else {
+      jsondec_err(d, "Invalid hex digit");
     }
-    case UPB_TYPE_UINT32: {
-      unsigned long val = strtoul(buf, &end, 0);
-      if (end != bufend) {
-        break;
-      } else if (val > UINT32_MAX || errno == ERANGE) {
-        return false;
-      } else {
-        upb_sink_putuint32(p->top->sink, parser_getsel(p), val);
-        return true;
-      }
+    cp = (cp << 4) | ch;
+  }
+
+  return cp;
+}
+
+/* Parses a \uXXXX unicode escape (possibly a surrogate pair). */
+static size_t jsondec_unicode(jsondec *d, char* out) {
+  uint32_t cp = jsondec_codepoint(d);
+  if (cp >= 0xd800 && cp <= 0xdbff) {
+    /* Surrogate pair: two 16-bit codepoints become a 32-bit codepoint. */
+    uint32_t high = cp;
+    uint32_t low;
+    jsondec_parselit(d, "\\u");
+    low = jsondec_codepoint(d);
+    if (low < 0xdc00 || low > 0xdfff) {
+      jsondec_err(d, "Invalid low surrogate");
     }
-    /* XXX: We can't handle [u]int64 properly on 32-bit machines because
-     * strto[u]ll isn't in C89. */
-    case UPB_TYPE_INT64: {
-      long val = strtol(buf, &end, 0);
-      if (errno == ERANGE || end != bufend) {
-        break;
-      } else {
-        upb_sink_putint64(p->top->sink, parser_getsel(p), val);
-        return true;
-      }
+    cp = (high & 0x3ff) << 10;
+    cp |= (low & 0x3ff);
+    cp += 0x10000;
+  } else if (cp >= 0xdc00 && cp <= 0xdfff) {
+    jsondec_err(d, "Unpaired low surrogate");
+  }
+
+  /* Write to UTF-8 */
+  if (cp <= 0x7f) {
+    out[0] = cp;
+    return 1;
+  } else if (cp <= 0x07FF) {
+    out[0] = ((cp >> 6) & 0x1F) | 0xC0;
+    out[1] = ((cp >> 0) & 0x3F) | 0x80;
+    return 2;
+  } else if (cp <= 0xFFFF) {
+    out[0] = ((cp >> 12) & 0x0F) | 0xE0;
+    out[1] = ((cp >> 6) & 0x3F) | 0x80;
+    out[2] = ((cp >> 0) & 0x3F) | 0x80;
+    return 3;
+  } else if (cp < 0x10FFFF) {
+    out[0] = ((cp >> 18) & 0x07) | 0xF0;
+    out[1] = ((cp >> 12) & 0x3f) | 0x80;
+    out[2] = ((cp >> 6) & 0x3f) | 0x80;
+    out[3] = ((cp >> 0) & 0x3f) | 0x80;
+    return 4;
+  } else {
+    jsondec_err(d, "Invalid codepoint");
+  }
+}
+
+static void jsondec_resize(jsondec *d, char **buf, char **end, char **buf_end) {
+  size_t oldsize = *buf_end - *buf;
+  size_t len = *end - *buf;
+  size_t size = UPB_MAX(8, 2 * oldsize);
+
+  *buf = upb_arena_realloc(d->arena, *buf, len, size);
+  *end = *buf + len;
+  *buf_end = *buf + size;
+}
+
+static upb_strview jsondec_string(jsondec *d) {
+  char *buf = NULL;
+  char *end = NULL;
+  char *buf_end = NULL;
+
+  jsondec_skipws(d);
+
+  if (*d->ptr++ != '"') {
+    jsondec_err(d, "Expected string");
+  }
+
+  while (d->ptr < d->end) {
+    char ch = *d->ptr++;
+
+    if (end == buf_end) {
+      jsondec_resize(d, &buf, &end, &buf_end);
     }
-    case UPB_TYPE_UINT64: {
-      unsigned long val = strtoul(p->accumulated, &end, 0);
-      if (end != bufend) {
-        break;
-      } else if (errno == ERANGE) {
-        return false;
-      } else {
-        upb_sink_putuint64(p->top->sink, parser_getsel(p), val);
-        return true;
+
+    switch (ch) {
+      case '"': {
+        upb_strview ret = {buf, end - buf};
+        return ret;
       }
+      case '\\':
+        if (d->ptr == d->end) goto eof;
+        if (*d->ptr == 'u') {
+          d->ptr++;
+          if (buf_end - end < 4) {
+            // Allow space for maximum-sized code point (4 bytes).
+            jsondec_resize(d, &buf, &end, &buf_end);
+          }
+          end += jsondec_unicode(d, end);
+        } else {
+          *end++ = jsondec_escape(d);
+        }
+        break;
+      default:
+        if ((unsigned char)*d->ptr < 0x20) {
+          jsondec_err(d, "Invalid char in JSON string");
+        }
+        *end++ = ch;
+        break;
+    }
+  }
+
+eof:
+  jsondec_err(d, "EOF inside string");
+}
+
+static void jsondec_skipval(jsondec *d) {
+  switch (jsondec_peek(d)) {
+    case JD_OBJECT:
+      jsondec_objstart(d);
+      while (jsondec_objnext(d)) {
+        jsondec_string(d);
+        jsondec_entrysep(d);
+        jsondec_skipval(d);
+      }
+      jsondec_objend(d);
+      break;
+    case JD_ARRAY:
+      jsondec_arrstart(d);
+      while (jsondec_arrnext(d)) {
+        jsondec_skipval(d);
+      }
+      jsondec_arrend(d);
+      break;
+    case JD_TRUE:
+      jsondec_true(d);
+      break;
+    case JD_FALSE:
+      jsondec_false(d);
+      break;
+    case JD_NULL:
+      jsondec_null(d);
+      break;
+    case JD_STRING:
+      jsondec_string(d);
+      break;
+    case JD_NUMBER:
+      jsondec_number(d);
+      break;
+  }
+}
+
+/* Base64 decoding for bytes fields. ******************************************/
+
+static int jsondec_base64_tablelookup(const char ch) {
+  /* Table includes the normal base64 chars plus the URL-safe variant. */
+  const signed char table[256] = {
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       62 /*+*/, -1,       62 /*-*/, -1,       63 /*/ */, 52 /*0*/,
+      53 /*1*/, 54 /*2*/, 55 /*3*/, 56 /*4*/, 57 /*5*/, 58 /*6*/,  59 /*7*/,
+      60 /*8*/, 61 /*9*/, -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       0 /*A*/,  1 /*B*/,  2 /*C*/,  3 /*D*/,   4 /*E*/,
+      5 /*F*/,  6 /*G*/,  07 /*H*/, 8 /*I*/,  9 /*J*/,  10 /*K*/,  11 /*L*/,
+      12 /*M*/, 13 /*N*/, 14 /*O*/, 15 /*P*/, 16 /*Q*/, 17 /*R*/,  18 /*S*/,
+      19 /*T*/, 20 /*U*/, 21 /*V*/, 22 /*W*/, 23 /*X*/, 24 /*Y*/,  25 /*Z*/,
+      -1,       -1,       -1,       -1,       63 /*_*/, -1,        26 /*a*/,
+      27 /*b*/, 28 /*c*/, 29 /*d*/, 30 /*e*/, 31 /*f*/, 32 /*g*/,  33 /*h*/,
+      34 /*i*/, 35 /*j*/, 36 /*k*/, 37 /*l*/, 38 /*m*/, 39 /*n*/,  40 /*o*/,
+      41 /*p*/, 42 /*q*/, 43 /*r*/, 44 /*s*/, 45 /*t*/, 46 /*u*/,  47 /*v*/,
+      48 /*w*/, 49 /*x*/, 50 /*y*/, 51 /*z*/, -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1,       -1,       -1,        -1,
+      -1,       -1,       -1,       -1};
+
+  /* Sign-extend return value so high bit will be set on any unexpected char. */
+  return table[(unsigned)ch];
+}
+
+static char *jsondec_partialbase64(jsondec *d, const char *ptr, const char *end,
+                                   char *out) {
+  int32_t val = -1;
+
+  switch (end - ptr) {
+    case 2:
+      val = jsondec_base64_tablelookup(ptr[0]) << 18 |
+            jsondec_base64_tablelookup(ptr[1]) << 12;
+      out[0] = val >> 16;
+      out += 1;
+      break;
+    case 3:
+      val = jsondec_base64_tablelookup(ptr[0]) << 18 |
+            jsondec_base64_tablelookup(ptr[1]) << 12 |
+            jsondec_base64_tablelookup(ptr[2]) << 6;
+      out[0] = val >> 16;
+      out[1] = (val >> 8) & 0xff;
+      out += 2;
+      break;
+  }
+
+  if (val < 0) {
+    jsondec_err(d, "Corrupt base64");
+  }
+
+  return out;
+}
+
+static size_t jsondec_base64(jsondec *d, upb_strview str) {
+  /* We decode in place. This is safe because this is a new buffer (not
+   * aliasing the input) and because base64 decoding shrinks 4 bytes into 3. */
+  char *out = (char*)str.data;
+  const char *ptr = str.data;
+  const char *end = ptr + str.size;
+  const char *end4 = ptr + (str.size & -4);  /* Round down to multiple of 4. */
+
+  for (; ptr < end4; ptr += 4, out += 3) {
+    int val = jsondec_base64_tablelookup(ptr[0]) << 18 |
+              jsondec_base64_tablelookup(ptr[1]) << 12 |
+              jsondec_base64_tablelookup(ptr[2]) << 6 |
+              jsondec_base64_tablelookup(ptr[3]) << 0;
+
+    if (val < 0) {
+      /* Junk chars or padding. Remove trailing padding, if any. */
+      if (end - ptr == 4 && ptr[3] == '=') {
+        if (ptr[2] == '=') {
+          end -= 2;
+        } else {
+          end -= 1;
+        }
+      }
+      break;
+    }
+
+    out[0] = val >> 16;
+    out[1] = (val >> 8) & 0xff;
+    out[2] = val & 0xff;
+  }
+
+  if (ptr < end) {
+    /* Process remaining chars. We do not require padding. */
+    out = jsondec_partialbase64(d, ptr, end, out);
+  }
+
+  return out - str.data;
+}
+
+/* Low-level integer parsing **************************************************/
+
+/* We use these hand-written routines instead of strto[u]l() because the "long
+ * long" variants aren't in c89. Also our version allows setting a ptr limit. */
+
+static const char *jsondec_buftouint64(jsondec *d, const char *ptr,
+                                       const char *end, uint64_t *val) {
+  uint64_t u64 = 0;
+  while (ptr < end) {
+    unsigned ch = *ptr - '0';
+    if (ch >= 10) break;
+    if (u64 > UINT64_MAX / 10 || u64 * 10 > UINT64_MAX - ch) {
+      jsondec_err(d, "Integer overflow");
+    }
+    u64 *= 10;
+    u64 += ch;
+    ptr++;
+  }
+
+  *val = u64;
+  return ptr;
+}
+
+static const char *jsondec_buftoint64(jsondec *d, const char *ptr,
+                                      const char *end, int64_t *val) {
+  bool neg = false;
+  uint64_t u64;
+
+  if (ptr != end && *ptr == '-') {
+    ptr++;
+    neg = true;
+  }
+
+  ptr = jsondec_buftouint64(d, ptr, end, &u64);
+  if (u64 > (uint64_t)INT64_MAX + neg) {
+    jsondec_err(d, "Integer overflow");
+  }
+
+  *val = neg ? -u64 : u64;
+  return ptr;
+}
+
+static uint64_t jsondec_strtouint64(jsondec *d, upb_strview str) {
+  const char *end = str.data + str.size;
+  uint64_t ret;
+  if (jsondec_buftouint64(d, str.data, end, &ret) != end) {
+    jsondec_err(d, "Non-number characters in quoted integer");
+  }
+  return ret;
+}
+
+static int64_t jsondec_strtoint64(jsondec *d, upb_strview str) {
+  const char *end = str.data + str.size;
+  int64_t ret;
+  if (jsondec_buftoint64(d, str.data, end, &ret) != end) {
+    jsondec_err(d, "Non-number characters in quoted integer");
+  }
+  return ret;
+}
+
+/* Primitive value types ******************************************************/
+
+/* Parse INT32 or INT64 value. */
+static upb_msgval jsondec_int(jsondec *d, const upb_fielddef *f) {
+  upb_msgval val;
+
+  switch (jsondec_peek(d)) {
+    case JD_NUMBER: {
+      double dbl = jsondec_number(d);
+      if (dbl > 9223372036854774784.0 || dbl < -9223372036854775808.0) {
+        jsondec_err(d, "JSON number is out of range.");
+      }
+      val.int64_val = dbl;  /* must be guarded, overflow here is UB */
+      if (val.int64_val != dbl) {
+        jsondec_errf(d, "JSON number was not integral (%d != %" PRId64 ")", dbl,
+                     val.int64_val);
+      }
+      break;
+    }
+    case JD_STRING: {
+      upb_strview str = jsondec_string(d);
+      val.int64_val = jsondec_strtoint64(d, str);
+      break;
     }
     default:
-      break;
+      jsondec_err(d, "Expected number or string");
   }
 
-  if (type != UPB_TYPE_DOUBLE && type != UPB_TYPE_FLOAT && is_quoted) {
-    /* Quoted numbers for integer types are not allowed to be in double form. */
-    return false;
-  }
-
-  if (len == strlen("Infinity") && strcmp(buf, "Infinity") == 0) {
-    /* C89 does not have an INFINITY macro. */
-    val = inf;
-  } else if (len == strlen("-Infinity") && strcmp(buf, "-Infinity") == 0) {
-    val = -inf;
-  } else {
-    val = strtod(buf, &end);
-    if (errno == ERANGE || end != bufend) {
-      return false;
+  if (upb_fielddef_type(f) == UPB_TYPE_INT32) {
+    if (val.int64_val > INT32_MAX || val.int64_val < INT32_MIN) {
+      jsondec_err(d, "Integer out of range.");
     }
+    val.int32_val = val.int64_val;
   }
-
-  switch (type) {
-#define CASE(capitaltype, smalltype, ctype, min, max)                     \
-    case UPB_TYPE_ ## capitaltype: {                                      \
-      if (modf(val, &dummy) != 0 || val > max || val < min) {             \
-        return false;                                                     \
-      } else {                                                            \
-        upb_sink_put ## smalltype(p->top->sink, parser_getsel(p),        \
-                                  (ctype)val);                            \
-        return true;                                                      \
-      }                                                                   \
-      break;                                                              \
-    }
-    case UPB_TYPE_ENUM:
-    CASE(INT32, int32, int32_t, INT32_MIN, INT32_MAX);
-    CASE(INT64, int64, int64_t, INT64_MIN, INT64_MAX);
-    CASE(UINT32, uint32, uint32_t, 0, UINT32_MAX);
-    CASE(UINT64, uint64, uint64_t, 0, UINT64_MAX);
-#undef CASE
-
-    case UPB_TYPE_DOUBLE:
-      upb_sink_putdouble(p->top->sink, parser_getsel(p), val);
-      return true;
-    case UPB_TYPE_FLOAT:
-      if ((val > FLT_MAX || val < -FLT_MAX) && val != inf && val != -inf) {
-        return false;
-      } else {
-        upb_sink_putfloat(p->top->sink, parser_getsel(p), val);
-        return true;
-      }
-    default:
-      return false;
-  }
-}
-
-static bool parse_number(upb_json_parser *p, bool is_quoted) {
-  size_t len;
-  const char *buf;
-
-  /* strtol() and friends unfortunately do not support specifying the length of
-   * the input string, so we need to force a copy into a NULL-terminated buffer. */
-  if (!multipart_text(p, "\0", 1, false)) {
-    return false;
-  }
-
-  buf = accumulate_getptr(p, &len);
-
-  if (parse_number_from_buffer(p, buf, is_quoted)) {
-    multipart_end(p);
-    return true;
-  } else {
-    upb_status_seterrf(p->status, "error parsing number: %s", buf);
-    multipart_end(p);
-    return false;
-  }
-}
-
-static bool parser_putbool(upb_json_parser *p, bool val) {
-  bool ok;
-
-  if (p->top->f == NULL) {
-    return true;
-  }
-
-  if (upb_fielddef_type(p->top->f) != UPB_TYPE_BOOL) {
-    upb_status_seterrf(p->status,
-                       "Boolean value specified for non-bool field: %s",
-                       upb_fielddef_name(p->top->f));
-    return false;
-  }
-
-  ok = upb_sink_putbool(p->top->sink, parser_getsel(p), val);
-  UPB_ASSERT(ok);
-
-  return true;
-}
-
-static bool end_bool(upb_json_parser *p, bool val) {
-  if (is_top_level(p)) {
-    if (is_wellknown_msg(p, UPB_WELLKNOWN_BOOLVALUE)) {
-      start_wrapper_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_BOOLVALUE);
-    } else {
-      return false;
-    }
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_BOOLVALUE)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_wrapper_object(p);
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_value_object(p, VALUE_BOOLVALUE);
-  }
-
-  if (p->top->is_unknown_field) {
-    return true;
-  }
-
-  if (!parser_putbool(p, val)) {
-    return false;
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_BOOLVALUE)) {
-    end_wrapper_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-    end_value_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  return true;
-}
-
-static bool end_null(upb_json_parser *p) {
-  const char *zero_ptr = "0";
-
-  if (is_top_level(p)) {
-    if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_NULLVALUE);
-    } else {
-      return true;
-    }
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_value_object(p, VALUE_NULLVALUE);
-  } else {
-    return true;
-  }
-
-  /* Fill null_value field. */
-  multipart_startaccum(p);
-  capture_begin(p, zero_ptr);
-  capture_end(p, zero_ptr + 1);
-  parse_number(p, false);
-
-  end_value_object(p);
-  if (!is_top_level(p)) {
-    end_subobject(p);
-  }
-
-  return true;
-}
-
-static bool start_any_stringval(upb_json_parser *p) {
-  multipart_startaccum(p);
-  return true;
-}
-
-static bool start_stringval(upb_json_parser *p) {
-  if (is_top_level(p)) {
-    if (is_string_wrapper_object(p) ||
-        is_number_wrapper_object(p)) {
-      start_wrapper_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_FIELDMASK)) {
-      start_fieldmask_object(p);
-      return true;
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_TIMESTAMP) ||
-               is_wellknown_msg(p, UPB_WELLKNOWN_DURATION)) {
-      start_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_STRINGVALUE);
-    } else {
-      return false;
-    }
-  } else if (does_string_wrapper_start(p) ||
-             does_number_wrapper_start(p)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_wrapper_object(p);
-  } else if (does_fieldmask_start(p)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_fieldmask_object(p);
-    return true;
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_TIMESTAMP) ||
-             is_wellknown_field(p, UPB_WELLKNOWN_DURATION)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_object(p);
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE)) {
-    if (!start_subobject(p)) {
-      return false;
-    }
-    start_value_object(p, VALUE_STRINGVALUE);
-  }
-
-  if (p->top->f == NULL) {
-    multipart_startaccum(p);
-    return true;
-  }
-
-  if (p->top->is_any) {
-    return start_any_stringval(p);
-  }
-
-  if (upb_fielddef_isstring(p->top->f)) {
-    upb_jsonparser_frame *inner;
-    upb_selector_t sel;
-
-    if (!check_stack(p)) return false;
-
-    /* Start a new parser frame: parser frames correspond one-to-one with
-     * handler frames, and string events occur in a sub-frame. */
-    inner = start_jsonparser_frame(p);
-    sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSTR);
-    upb_sink_startstr(p->top->sink, sel, 0, &inner->sink);
-    inner->m = p->top->m;
-    inner->f = p->top->f;
-    p->top = inner;
-
-    if (upb_fielddef_type(p->top->f) == UPB_TYPE_STRING) {
-      /* For STRING fields we push data directly to the handlers as it is
-       * parsed.  We don't do this yet for BYTES fields, because our base64
-       * decoder is not streaming.
-       *
-       * TODO(haberman): make base64 decoding streaming also. */
-      multipart_start(p, getsel_for_handlertype(p, UPB_HANDLER_STRING));
-      return true;
-    } else {
-      multipart_startaccum(p);
-      return true;
-    }
-  } else if (upb_fielddef_type(p->top->f) != UPB_TYPE_BOOL &&
-             upb_fielddef_type(p->top->f) != UPB_TYPE_MESSAGE) {
-    /* No need to push a frame -- numeric values in quotes remain in the
-     * current parser frame.  These values must accumulate so we can convert
-     * them all at once at the end. */
-    multipart_startaccum(p);
-    return true;
-  } else {
-    upb_status_seterrf(p->status,
-                       "String specified for bool or submessage field: %s",
-                       upb_fielddef_name(p->top->f));
-    return false;
-  }
-}
-
-static bool end_any_stringval(upb_json_parser *p) {
-  size_t len;
-  const char *buf = accumulate_getptr(p, &len);
-
-  /* Set type_url */
-  upb_selector_t sel;
-  upb_jsonparser_frame *inner;
-  if (!check_stack(p)) return false;
-  inner = p->top + 1;
-
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSTR);
-  upb_sink_startstr(p->top->sink, sel, 0, &inner->sink);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STRING);
-  upb_sink_putstring(inner->sink, sel, buf, len, NULL);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSTR);
-  upb_sink_endstr(inner->sink, sel);
-
-  multipart_end(p);
-
-  /* Resolve type url */
-  if (strncmp(buf, "type.googleapis.com/", 20) == 0 && len > 20) {
-    const upb_msgdef *payload_type = NULL;
-    buf += 20;
-    len -= 20;
-
-    payload_type = upb_symtab_lookupmsg2(p->symtab, buf, len);
-    if (payload_type == NULL) {
-      upb_status_seterrf(
-          p->status, "Cannot find packed type: %.*s\n", (int)len, buf);
-      return false;
-    }
-
-    json_parser_any_frame_set_payload_type(p, p->top->any_frame, payload_type);
-
-    return true;
-  } else {
-    upb_status_seterrf(
-        p->status, "Invalid type url: %.*s\n", (int)len, buf);
-    return false;
-  }
-}
-
-static bool end_stringval_nontop(upb_json_parser *p) {
-  bool ok = true;
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_TIMESTAMP) ||
-      is_wellknown_msg(p, UPB_WELLKNOWN_DURATION)) {
-    multipart_end(p);
-    return true;
-  }
-
-  if (p->top->f == NULL) {
-    multipart_end(p);
-    return true;
-  }
-
-  if (p->top->is_any) {
-    return end_any_stringval(p);
-  }
-
-  switch (upb_fielddef_type(p->top->f)) {
-    case UPB_TYPE_BYTES:
-      if (!base64_push(p, getsel_for_handlertype(p, UPB_HANDLER_STRING),
-                       p->accumulated, p->accumulated_len)) {
-        return false;
-      }
-      /* Fall through. */
-
-    case UPB_TYPE_STRING: {
-      upb_selector_t sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSTR);
-      upb_sink_endstr(p->top->sink, sel);
-      p->top--;
-      break;
-    }
-
-    case UPB_TYPE_ENUM: {
-      /* Resolve enum symbolic name to integer value. */
-      const upb_enumdef *enumdef = upb_fielddef_enumsubdef(p->top->f);
-
-      size_t len;
-      const char *buf = accumulate_getptr(p, &len);
-
-      int32_t int_val = 0;
-      ok = upb_enumdef_ntoi(enumdef, buf, len, &int_val);
-
-      if (ok) {
-        upb_selector_t sel = parser_getsel(p);
-        upb_sink_putint32(p->top->sink, sel, int_val);
-      } else {
-        upb_status_seterrf(p->status, "Enum value unknown: '%.*s'", len, buf);
-      }
-
-      break;
-    }
-
-    case UPB_TYPE_INT32:
-    case UPB_TYPE_INT64:
-    case UPB_TYPE_UINT32:
-    case UPB_TYPE_UINT64:
-    case UPB_TYPE_DOUBLE:
-    case UPB_TYPE_FLOAT:
-      ok = parse_number(p, true);
-      break;
-
-    default:
-      UPB_ASSERT(false);
-      upb_status_seterrmsg(p->status, "Internal error in JSON decoder");
-      ok = false;
-      break;
-  }
-
-  multipart_end(p);
-
-  return ok;
-}
-
-static bool end_stringval(upb_json_parser *p) {
-  /* FieldMask's stringvals have been ended when handling them. Only need to
-   * close FieldMask here.*/
-  if (does_fieldmask_end(p)) {
-    end_fieldmask_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  if (!end_stringval_nontop(p)) {
-    return false;
-  }
-
-  if (does_string_wrapper_end(p) ||
-      does_number_wrapper_end(p)) {
-    end_wrapper_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-    end_value_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_TIMESTAMP) ||
-      is_wellknown_msg(p, UPB_WELLKNOWN_DURATION) ||
-      is_wellknown_msg(p, UPB_WELLKNOWN_FIELDMASK)) {
-    end_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-    return true;
-  }
-
-  return true;
-}
-
-static void start_duration_base(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_duration_base(upb_json_parser *p, const char *ptr) {
-  size_t len;
-  const char *buf;
-  char seconds_buf[14];
-  char nanos_buf[12];
-  char *end;
-  int64_t seconds = 0;
-  int32_t nanos = 0;
-  double val = 0.0;
-  const char *seconds_membername = "seconds";
-  const char *nanos_membername = "nanos";
-  size_t fraction_start;
-
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-
-  buf = accumulate_getptr(p, &len);
-
-  memset(seconds_buf, 0, 14);
-  memset(nanos_buf, 0, 12);
-
-  /* Find out base end. The maximus duration is 315576000000, which cannot be
-   * represented by double without losing precision. Thus, we need to handle
-   * fraction and base separately. */
-  for (fraction_start = 0; fraction_start < len && buf[fraction_start] != '.';
-       fraction_start++);
-
-  /* Parse base */
-  memcpy(seconds_buf, buf, fraction_start);
-  seconds = strtol(seconds_buf, &end, 10);
-  if (errno == ERANGE || end != seconds_buf + fraction_start) {
-    upb_status_seterrf(p->status, "error parsing duration: %s",
-                       seconds_buf);
-    return false;
-  }
-
-  if (seconds > 315576000000) {
-    upb_status_seterrf(p->status, "error parsing duration: "
-                                   "maximum acceptable value is "
-                                   "315576000000");
-    return false;
-  }
-
-  if (seconds < -315576000000) {
-    upb_status_seterrf(p->status, "error parsing duration: "
-                                   "minimum acceptable value is "
-                                   "-315576000000");
-    return false;
-  }
-
-  /* Parse fraction */
-  nanos_buf[0] = '0';
-  memcpy(nanos_buf + 1, buf + fraction_start, len - fraction_start);
-  val = strtod(nanos_buf, &end);
-  if (errno == ERANGE || end != nanos_buf + len - fraction_start + 1) {
-    upb_status_seterrf(p->status, "error parsing duration: %s",
-                       nanos_buf);
-    return false;
-  }
-
-  nanos = val * 1000000000;
-  if (seconds < 0) nanos = -nanos;
-
-  /* Clean up buffer */
-  multipart_end(p);
-
-  /* Set seconds */
-  start_member(p);
-  capture_begin(p, seconds_membername);
-  capture_end(p, seconds_membername + 7);
-  end_membername(p);
-  upb_sink_putint64(p->top->sink, parser_getsel(p), seconds);
-  end_member(p);
-
-  /* Set nanos */
-  start_member(p);
-  capture_begin(p, nanos_membername);
-  capture_end(p, nanos_membername + 5);
-  end_membername(p);
-  upb_sink_putint32(p->top->sink, parser_getsel(p), nanos);
-  end_member(p);
-
-  /* Continue previous arena */
-  multipart_startaccum(p);
-
-  return true;
-}
-
-static int parse_timestamp_number(upb_json_parser *p) {
-  size_t len;
-  const char *buf;
-  int val;
-
-  /* atoi() and friends unfortunately do not support specifying the length of
-   * the input string, so we need to force a copy into a NULL-terminated buffer. */
-  multipart_text(p, "\0", 1, false);
-
-  buf = accumulate_getptr(p, &len);
-  val = atoi(buf);
-  multipart_end(p);
-  multipart_startaccum(p);
 
   return val;
 }
 
-static void start_year(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
+/* Parse UINT32 or UINT64 value. */
+static upb_msgval jsondec_uint(jsondec *d, const upb_fielddef *f) {
+  upb_msgval val;
 
-static bool end_year(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_year = parse_timestamp_number(p) - 1900;
-  return true;
-}
-
-static void start_month(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_month(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_mon = parse_timestamp_number(p) - 1;
-  return true;
-}
-
-static void start_day(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_day(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_mday = parse_timestamp_number(p);
-  return true;
-}
-
-static void start_hour(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_hour(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_hour = parse_timestamp_number(p);
-  return true;
-}
-
-static void start_minute(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_minute(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_min = parse_timestamp_number(p);
-  return true;
-}
-
-static void start_second(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_second(upb_json_parser *p, const char *ptr) {
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-  p->tm.tm_sec = parse_timestamp_number(p);
-  return true;
-}
-
-static void start_timestamp_base(upb_json_parser *p) {
-  memset(&p->tm, 0, sizeof(struct tm));
-}
-
-static void start_timestamp_fraction(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_timestamp_fraction(upb_json_parser *p, const char *ptr) {
-  size_t len;
-  const char *buf;
-  char nanos_buf[12];
-  char *end;
-  double val = 0.0;
-  int32_t nanos;
-  const char *nanos_membername = "nanos";
-
-  memset(nanos_buf, 0, 12);
-
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-
-  buf = accumulate_getptr(p, &len);
-
-  if (len > 10) {
-    upb_status_seterrf(p->status,
-        "error parsing timestamp: at most 9-digit fraction.");
-    return false;
-  }
-
-  /* Parse nanos */
-  nanos_buf[0] = '0';
-  memcpy(nanos_buf + 1, buf, len);
-  val = strtod(nanos_buf, &end);
-
-  if (errno == ERANGE || end != nanos_buf + len + 1) {
-    upb_status_seterrf(p->status, "error parsing timestamp nanos: %s",
-                       nanos_buf);
-    return false;
-  }
-
-  nanos = val * 1000000000;
-
-  /* Clean up previous environment */
-  multipart_end(p);
-
-  /* Set nanos */
-  start_member(p);
-  capture_begin(p, nanos_membername);
-  capture_end(p, nanos_membername + 5);
-  end_membername(p);
-  upb_sink_putint32(p->top->sink, parser_getsel(p), nanos);
-  end_member(p);
-
-  /* Continue previous environment */
-  multipart_startaccum(p);
-
-  return true;
-}
-
-static void start_timestamp_zone(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-/* epoch_days(1970, 1, 1) == 1970-01-01 == 0. */
-static int epoch_days(int year, int month, int day) {
-  static const uint16_t month_yday[12] = {0,   31,  59,  90,  120, 151,
-                                          181, 212, 243, 273, 304, 334};
-  int febs_since_0 = month > 2 ? year + 1 : year;
-  int leap_days_since_0 = div_round_up(febs_since_0, 4) -
-                          div_round_up(febs_since_0, 100) +
-                          div_round_up(febs_since_0, 400);
-  int days_since_0 =
-      365 * year + month_yday[month - 1] + (day - 1) + leap_days_since_0;
-
-  /* Convert from 0-epoch (0001-01-01 BC) to Unix Epoch (1970-01-01 AD).
-   * Since the "BC" system does not have a year zero, 1 BC == year zero. */
-  return days_since_0 - 719528;
-}
-
-static int64_t upb_timegm(const struct tm *tp) {
-  int64_t ret = epoch_days(tp->tm_year + 1900, tp->tm_mon + 1, tp->tm_mday);
-  ret = (ret * 24) + tp->tm_hour;
-  ret = (ret * 60) + tp->tm_min;
-  ret = (ret * 60) + tp->tm_sec;
-  return ret;
-}
-
-static bool end_timestamp_zone(upb_json_parser *p, const char *ptr) {
-  size_t len;
-  const char *buf;
-  int hours;
-  int64_t seconds;
-  const char *seconds_membername = "seconds";
-
-  if (!capture_end(p, ptr)) {
-    return false;
-  }
-
-  buf = accumulate_getptr(p, &len);
-
-  if (buf[0] != 'Z') {
-    if (sscanf(buf + 1, "%2d:00", &hours) != 1) {
-      upb_status_seterrf(p->status, "error parsing timestamp offset");
-      return false;
-    }
-
-    if (buf[0] == '+') {
-      hours = -hours;
-    }
-
-    p->tm.tm_hour += hours;
-  }
-
-  /* Normalize tm */
-  seconds = upb_timegm(&p->tm);
-
-  /* Check timestamp boundary */
-  if (seconds < -62135596800) {
-    upb_status_seterrf(p->status, "error parsing timestamp: "
-                                   "minimum acceptable value is "
-                                   "0001-01-01T00:00:00Z");
-    return false;
-  }
-
-  /* Clean up previous environment */
-  multipart_end(p);
-
-  /* Set seconds */
-  start_member(p);
-  capture_begin(p, seconds_membername);
-  capture_end(p, seconds_membername + 7);
-  end_membername(p);
-  upb_sink_putint64(p->top->sink, parser_getsel(p), seconds);
-  end_member(p);
-
-  /* Continue previous environment */
-  multipart_startaccum(p);
-
-  return true;
-}
-
-static void start_fieldmask_path_text(upb_json_parser *p, const char *ptr) {
-  capture_begin(p, ptr);
-}
-
-static bool end_fieldmask_path_text(upb_json_parser *p, const char *ptr) {
-  return capture_end(p, ptr);
-}
-
-static bool start_fieldmask_path(upb_json_parser *p) {
-  upb_jsonparser_frame *inner;
-  upb_selector_t sel;
-
-  if (!check_stack(p)) return false;
-
-  /* Start a new parser frame: parser frames correspond one-to-one with
-   * handler frames, and string events occur in a sub-frame. */
-  inner = start_jsonparser_frame(p);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSTR);
-  upb_sink_startstr(p->top->sink, sel, 0, &inner->sink);
-  inner->m = p->top->m;
-  inner->f = p->top->f;
-  p->top = inner;
-
-  multipart_startaccum(p);
-  return true;
-}
-
-static bool lower_camel_push(
-    upb_json_parser *p, upb_selector_t sel, const char *ptr, size_t len) {
-  const char *limit = ptr + len;
-  bool first = true;
-  for (;ptr < limit; ptr++) {
-    if (*ptr >= 'A' && *ptr <= 'Z' && !first) {
-      char lower = tolower(*ptr);
-      upb_sink_putstring(p->top->sink, sel, "_", 1, NULL);
-      upb_sink_putstring(p->top->sink, sel, &lower, 1, NULL);
-    } else {
-      upb_sink_putstring(p->top->sink, sel, ptr, 1, NULL);
-    }
-    first = false;
-  }
-  return true;
-}
-
-static bool end_fieldmask_path(upb_json_parser *p) {
-  upb_selector_t sel;
-
-  if (!lower_camel_push(
-           p, getsel_for_handlertype(p, UPB_HANDLER_STRING),
-           p->accumulated, p->accumulated_len)) {
-    return false;
-  }
-
-  sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSTR);
-  upb_sink_endstr(p->top->sink, sel);
-  p->top--;
-
-  multipart_end(p);
-  return true;
-}
-
-static void start_member(upb_json_parser *p) {
-  UPB_ASSERT(!p->top->f);
-  multipart_startaccum(p);
-}
-
-/* Helper: invoked during parse_mapentry() to emit the mapentry message's key
- * field based on the current contents of the accumulate buffer. */
-static bool parse_mapentry_key(upb_json_parser *p) {
-
-  size_t len;
-  const char *buf = accumulate_getptr(p, &len);
-
-  /* Emit the key field. We do a bit of ad-hoc parsing here because the
-   * parser state machine has already decided that this is a string field
-   * name, and we are reinterpreting it as some arbitrary key type. In
-   * particular, integer and bool keys are quoted, so we need to parse the
-   * quoted string contents here. */
-
-  p->top->f = upb_msgdef_itof(p->top->m, UPB_MAPENTRY_KEY);
-  if (p->top->f == NULL) {
-    upb_status_seterrmsg(p->status, "mapentry message has no key");
-    return false;
-  }
-  switch (upb_fielddef_type(p->top->f)) {
-    case UPB_TYPE_INT32:
-    case UPB_TYPE_INT64:
-    case UPB_TYPE_UINT32:
-    case UPB_TYPE_UINT64:
-      /* Invoke end_number. The accum buffer has the number's text already. */
-      if (!parse_number(p, true)) {
-        return false;
+  switch (jsondec_peek(d)) {
+    case JD_NUMBER: {
+      double dbl = jsondec_number(d);
+      if (dbl > 18446744073709549568.0 || dbl < 0) {
+        jsondec_err(d, "JSON number is out of range.");
+      }
+      val.uint64_val = dbl;  /* must be guarded, overflow here is UB */
+      if (val.uint64_val != dbl) {
+        jsondec_errf(d, "JSON number was not integral (%d != %" PRIu64 ")", dbl,
+                     val.uint64_val);
       }
       break;
-    case UPB_TYPE_BOOL:
-      if (len == 4 && !strncmp(buf, "true", 4)) {
-        if (!parser_putbool(p, true)) {
-          return false;
-        }
-      } else if (len == 5 && !strncmp(buf, "false", 5)) {
-        if (!parser_putbool(p, false)) {
-          return false;
-        }
-      } else {
-        upb_status_seterrmsg(p->status,
-                             "Map bool key not 'true' or 'false'");
-        return false;
-      }
-      multipart_end(p);
-      break;
-    case UPB_TYPE_STRING:
-    case UPB_TYPE_BYTES: {
-      upb_sink subsink;
-      upb_selector_t sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSTR);
-      upb_sink_startstr(p->top->sink, sel, len, &subsink);
-      sel = getsel_for_handlertype(p, UPB_HANDLER_STRING);
-      upb_sink_putstring(subsink, sel, buf, len, NULL);
-      sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSTR);
-      upb_sink_endstr(subsink, sel);
-      multipart_end(p);
+    }
+    case JD_STRING: {
+      upb_strview str = jsondec_string(d);
+      val.uint64_val = jsondec_strtouint64(d, str);
       break;
     }
     default:
-      upb_status_seterrmsg(p->status, "Invalid field type for map key");
-      return false;
+      jsondec_err(d, "Expected number or string");
   }
 
-  return true;
+  if (upb_fielddef_type(f) == UPB_TYPE_UINT32) {
+    if (val.uint64_val > UINT32_MAX) {
+      jsondec_err(d, "Integer out of range.");
+    }
+    val.uint32_val = val.uint64_val;
+  }
+
+  return val;
 }
 
-/* Helper: emit one map entry (as a submessage in the map field sequence). This
- * is invoked from end_membername(), at the end of the map entry's key string,
- * with the map key in the accumulate buffer. It parses the key from that
- * buffer, emits the handler calls to start the mapentry submessage (setting up
- * its subframe in the process), and sets up state in the subframe so that the
- * value parser (invoked next) will emit the mapentry's value field and then
- * end the mapentry message. */
+/* Parse DOUBLE or FLOAT value. */
+static upb_msgval jsondec_double(jsondec *d, const upb_fielddef *f) {
+  upb_strview str;
+  upb_msgval val;
 
-static bool handle_mapentry(upb_json_parser *p) {
-  const upb_fielddef *mapfield;
-  const upb_msgdef *mapentrymsg;
-  upb_jsonparser_frame *inner;
-  upb_selector_t sel;
-
-  /* Map entry: p->top->sink is the seq frame, so we need to start a frame
-   * for the mapentry itself, and then set |f| in that frame so that the map
-   * value field is parsed, and also set a flag to end the frame after the
-   * map-entry value is parsed. */
-  if (!check_stack(p)) return false;
-
-  mapfield = p->top->mapfield;
-  mapentrymsg = upb_fielddef_msgsubdef(mapfield);
-
-  inner = start_jsonparser_frame(p);
-  p->top->f = mapfield;
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSUBMSG);
-  upb_sink_startsubmsg(p->top->sink, sel, &inner->sink);
-  inner->m = mapentrymsg;
-  inner->mapfield = mapfield;
-
-  /* Don't set this to true *yet* -- we reuse parsing handlers below to push
-   * the key field value to the sink, and these handlers will pop the frame
-   * if they see is_mapentry (when invoked by the parser state machine, they
-   * would have just seen the map-entry value, not key). */
-  inner->is_mapentry = false;
-  p->top = inner;
-
-  /* send STARTMSG in submsg frame. */
-  upb_sink_startmsg(p->top->sink);
-
-  parse_mapentry_key(p);
-
-  /* Set up the value field to receive the map-entry value. */
-  p->top->f = upb_msgdef_itof(p->top->m, UPB_MAPENTRY_VALUE);
-  p->top->is_mapentry = true;  /* set up to pop frame after value is parsed. */
-  p->top->mapfield = mapfield;
-  if (p->top->f == NULL) {
-    upb_status_seterrmsg(p->status, "mapentry message has no value");
-    return false;
+  switch (jsondec_peek(d)) {
+    case JD_NUMBER:
+      val.double_val = jsondec_number(d);
+      break;
+    case JD_STRING:
+      str = jsondec_string(d);
+      if (jsondec_streql(str, "NaN")) {
+        val.double_val = 0.0 / 0.0;
+      } else if (jsondec_streql(str, "Infinity")) {
+        val.double_val = UPB_INFINITY;
+      } else if (jsondec_streql(str, "-Infinity")) {
+        val.double_val = -UPB_INFINITY;
+      } else {
+        val.double_val = strtod(str.data, NULL);
+      }
+      break;
+    default:
+      jsondec_err(d, "Expected number or string");
   }
 
-  return true;
+  if (upb_fielddef_type(f) == UPB_TYPE_FLOAT) {
+    if (val.double_val != UPB_INFINITY && val.double_val != -UPB_INFINITY &&
+        (val.double_val > FLT_MAX || val.double_val < -FLT_MAX)) {
+      jsondec_err(d, "Float out of range");
+    }
+    val.float_val = val.double_val;
+  }
+
+  return val;
 }
 
-static bool end_membername(upb_json_parser *p) {
-  UPB_ASSERT(!p->top->f);
-
-  if (!p->top->m) {
-    p->top->is_unknown_field = true;
-    multipart_end(p);
-    return true;
+/* Parse STRING or BYTES value. */
+static upb_msgval jsondec_strfield(jsondec *d, const upb_fielddef *f) {
+  upb_msgval val;
+  val.str_val = jsondec_string(d);
+  if (upb_fielddef_type(f) == UPB_TYPE_BYTES) {
+    val.str_val.size = jsondec_base64(d, val.str_val);
   }
+  return val;
+}
 
-  if (p->top->is_any) {
-    return end_any_membername(p);
-  } else if (p->top->is_map) {
-    return handle_mapentry(p);
+static upb_msgval jsondec_enum(jsondec *d, const upb_fielddef *f) {
+  if (jsondec_peek(d) == JD_STRING) {
+    const upb_enumdef *e = upb_fielddef_enumsubdef(f);
+    upb_strview str = jsondec_string(d);
+    upb_msgval val;
+    if (!upb_enumdef_ntoi(e, str.data, str.size, &val.int32_val)) {
+      jsondec_err(d, "Unknown enumerator");
+    }
+    return val;
   } else {
-    size_t len;
-    const char *buf = accumulate_getptr(p, &len);
-    upb_value v;
+    return jsondec_int(d, f);
+  }
+}
 
-    if (upb_strtable_lookup2(p->top->name_table, buf, len, &v)) {
-      p->top->f = upb_value_getconstptr(v);
-      multipart_end(p);
+static upb_msgval jsondec_bool(jsondec *d, const upb_fielddef *f) {
+  bool is_map_key = upb_fielddef_number(f) == 1 &&
+                    upb_msgdef_mapentry(upb_fielddef_containingtype(f));
+  upb_msgval val;
 
-      return true;
-    } else if (p->ignore_json_unknown) {
-      p->top->is_unknown_field = true;
-      multipart_end(p);
-      return true;
+  if (is_map_key) {
+    upb_strview str = jsondec_string(d);
+    if (jsondec_streql(str, "true")) {
+      val.bool_val = true;
+    } else if (jsondec_streql(str, "false")) {
+      val.bool_val = false;
     } else {
-      upb_status_seterrf(p->status, "No such field: %.*s\n", (int)len, buf);
-      return false;
+      jsondec_err(d, "Invalid boolean map key");
+    }
+  } else {
+    switch (jsondec_peek(d)) {
+      case JD_TRUE:
+        val.bool_val = true;
+        jsondec_true(d);
+        break;
+      case JD_FALSE:
+        val.bool_val = false;
+        jsondec_false(d);
+        break;
+      default:
+        jsondec_err(d, "Expected true or false");
     }
   }
+
+  return val;
 }
 
-static bool end_any_membername(upb_json_parser *p) {
-  size_t len;
-  const char *buf = accumulate_getptr(p, &len);
-  upb_value v;
+/* Composite types (array/message/map) ****************************************/
 
-  if (len == 5 && strncmp(buf, "@type", len) == 0) {
-    upb_strtable_lookup2(p->top->name_table, "type_url", 8, &v);
-    p->top->f = upb_value_getconstptr(v);
-    multipart_end(p);
-    return true;
+static void jsondec_array(jsondec *d, upb_msg *msg, const upb_fielddef *f) {
+  upb_array *arr = upb_msg_mutable(msg, f, d->arena).array;
+
+  jsondec_arrstart(d);
+  while (jsondec_arrnext(d)) {
+    upb_msgval elem = jsondec_value(d, f);
+    upb_array_append(arr, elem, d->arena);
+  }
+  jsondec_arrend(d);
+}
+
+static void jsondec_map(jsondec *d, upb_msg *msg, const upb_fielddef *f) {
+  upb_map *map = upb_msg_mutable(msg, f, d->arena).map;
+  const upb_msgdef *entry = upb_fielddef_msgsubdef(f);
+  const upb_fielddef *key_f = upb_msgdef_itof(entry, 1);
+  const upb_fielddef *val_f = upb_msgdef_itof(entry, 2);
+
+  jsondec_objstart(d);
+  while (jsondec_objnext(d)) {
+    upb_msgval key, val;
+    key = jsondec_value(d, key_f);
+    jsondec_entrysep(d);
+    val = jsondec_value(d, val_f);
+    upb_map_set(map, key, val, d->arena);
+  }
+  jsondec_objend(d);
+}
+
+static void jsondec_tomsg(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  if (upb_msgdef_wellknowntype(m) == UPB_WELLKNOWN_UNSPECIFIED) {
+    jsondec_object(d, msg, m);
   } else {
-    p->top->is_unknown_field = true;
-    multipart_end(p);
-    return true;
+    jsondec_wellknown(d, msg, m);
   }
 }
 
-static void end_member(upb_json_parser *p) {
-  /* If we just parsed a map-entry value, end that frame too. */
-  if (p->top->is_mapentry) {
-    upb_selector_t sel;
-    bool ok;
-    const upb_fielddef *mapfield;
+static upb_msgval jsondec_msg(jsondec *d, const upb_fielddef *f) {
+  const upb_msgdef *m = upb_fielddef_msgsubdef(f);
+  upb_msg *msg = upb_msg_new(m, d->arena);
+  upb_msgval val;
 
-    UPB_ASSERT(p->top > p->stack);
-    /* send ENDMSG on submsg. */
-    upb_sink_endmsg(p->top->sink, p->status);
-    mapfield = p->top->mapfield;
-
-    /* send ENDSUBMSG in repeated-field-of-mapentries frame. */
-    p->top--;
-    ok = upb_handlers_getselector(mapfield, UPB_HANDLER_ENDSUBMSG, &sel);
-    UPB_ASSERT(ok);
-    upb_sink_endsubmsg(p->top->sink, sel);
-  }
-
-  p->top->f = NULL;
-  p->top->is_unknown_field = false;
+  jsondec_tomsg(d, msg, m);
+  val.msg_val = msg;
+  return val;
 }
 
-static void start_any_member(upb_json_parser *p, const char *ptr) {
-  start_member(p);
-  json_parser_any_frame_set_after_type_url_start_once(p->top->any_frame, ptr);
+static bool jsondec_isvalue(const upb_fielddef *f) {
+  return upb_fielddef_type(f) == UPB_TYPE_MESSAGE &&
+         upb_msgdef_wellknowntype(upb_fielddef_msgsubdef(f)) ==
+             UPB_WELLKNOWN_VALUE;
 }
 
-static void end_any_member(upb_json_parser *p, const char *ptr) {
-  json_parser_any_frame_set_before_type_url_end(p->top->any_frame, ptr);
-  end_member(p);
-}
+static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  upb_strview name;
+  const upb_fielddef *f;
+  const upb_fielddef *preserved;
 
-static bool start_subobject(upb_json_parser *p) {
-  if (p->top->is_unknown_field) {
-    if (!check_stack(p)) return false;
+  name = jsondec_string(d);
+  jsondec_entrysep(d);
+  f = upb_msgdef_lookupjsonname(m, name.data, name.size);
 
-    p->top = start_jsonparser_frame(p);
-    return true;
-  }
-
-  if (upb_fielddef_ismap(p->top->f)) {
-    upb_jsonparser_frame *inner;
-    upb_selector_t sel;
-
-    /* Beginning of a map. Start a new parser frame in a repeated-field
-     * context. */
-    if (!check_stack(p)) return false;
-
-    inner = start_jsonparser_frame(p);
-    sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSEQ);
-    upb_sink_startseq(p->top->sink, sel, &inner->sink);
-    inner->m = upb_fielddef_msgsubdef(p->top->f);
-    inner->mapfield = p->top->f;
-    inner->is_map = true;
-    p->top = inner;
-
-    return true;
-  } else if (upb_fielddef_issubmsg(p->top->f)) {
-    upb_jsonparser_frame *inner;
-    upb_selector_t sel;
-
-    /* Beginning of a subobject. Start a new parser frame in the submsg
-     * context. */
-    if (!check_stack(p)) return false;
-
-    inner = start_jsonparser_frame(p);
-    sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSUBMSG);
-    upb_sink_startsubmsg(p->top->sink, sel, &inner->sink);
-    inner->m = upb_fielddef_msgsubdef(p->top->f);
-    set_name_table(p, inner);
-    p->top = inner;
-
-    if (is_wellknown_msg(p, UPB_WELLKNOWN_ANY)) {
-      p->top->is_any = true;
-      p->top->any_frame = json_parser_any_frame_new(p);
-    } else {
-      p->top->is_any = false;
-      p->top->any_frame = NULL;
+  if (!f) {
+    if ((d->options & UPB_JSONDEC_IGNOREUNKNOWN) == 0) {
+      jsondec_err(d, "Unknown field");
     }
-
-    return true;
-  } else {
-    upb_status_seterrf(p->status,
-                       "Object specified for non-message/group field: %s",
-                       upb_fielddef_name(p->top->f));
-    return false;
-  }
-}
-
-static bool start_subobject_full(upb_json_parser *p) {
-  if (is_top_level(p)) {
-    if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_STRUCTVALUE);
-      if (!start_subobject(p)) return false;
-      start_structvalue_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_STRUCT)) {
-      start_structvalue_object(p);
-    } else {
-      return true;
-    }
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_STRUCT)) {
-    if (!start_subobject(p)) return false;
-    start_structvalue_object(p);
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE)) {
-    if (!start_subobject(p)) return false;
-    start_value_object(p, VALUE_STRUCTVALUE);
-    if (!start_subobject(p)) return false;
-    start_structvalue_object(p);
-  }
-
-  return start_subobject(p);
-}
-
-static void end_subobject(upb_json_parser *p) {
-  if (is_top_level(p)) {
+    jsondec_skipval(d);
     return;
   }
 
-  if (p->top->is_map) {
-    upb_selector_t sel;
-    p->top--;
-    sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSEQ);
-    upb_sink_endseq(p->top->sink, sel);
-  } else {
-    upb_selector_t sel;
-    bool is_unknown = p->top->m == NULL;
-    p->top--;
-    if (!is_unknown) {
-      sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSUBMSG);
-      upb_sink_endsubmsg(p->top->sink, sel);
-    }
-  }
-}
-
-static void end_subobject_full(upb_json_parser *p) {
-  end_subobject(p);
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_STRUCT)) {
-    end_structvalue_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
+  if (upb_fielddef_containingoneof(f) &&
+      upb_msg_hasoneof(msg, upb_fielddef_containingoneof(f))) {
+    jsondec_err(d, "More than one field for this oneof.");
   }
 
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-    end_value_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-  }
-}
-
-static bool start_array(upb_json_parser *p) {
-  upb_jsonparser_frame *inner;
-  upb_selector_t sel;
-
-  if (is_top_level(p)) {
-    if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-      start_value_object(p, VALUE_LISTVALUE);
-      if (!start_subobject(p)) return false;
-      start_listvalue_object(p);
-    } else if (is_wellknown_msg(p, UPB_WELLKNOWN_LISTVALUE)) {
-      start_listvalue_object(p);
-    } else {
-      return false;
-    }
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_LISTVALUE) &&
-             (!upb_fielddef_isseq(p->top->f) ||
-              p->top->is_repeated)) {
-    if (!start_subobject(p)) return false;
-    start_listvalue_object(p);
-  } else if (is_wellknown_field(p, UPB_WELLKNOWN_VALUE) &&
-             (!upb_fielddef_isseq(p->top->f) ||
-              p->top->is_repeated)) {
-    if (!start_subobject(p)) return false;
-    start_value_object(p, VALUE_LISTVALUE);
-    if (!start_subobject(p)) return false;
-    start_listvalue_object(p);
-  }
-
-  if (p->top->is_unknown_field) {
-    inner = start_jsonparser_frame(p);
-    inner->is_unknown_field = true;
-    p->top = inner;
-
-    return true;
-  }
-
-  if (!upb_fielddef_isseq(p->top->f)) {
-    upb_status_seterrf(p->status,
-                       "Array specified for non-repeated field: %s",
-                       upb_fielddef_name(p->top->f));
-    return false;
-  }
-
-  if (!check_stack(p)) return false;
-
-  inner = start_jsonparser_frame(p);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSEQ);
-  upb_sink_startseq(p->top->sink, sel, &inner->sink);
-  inner->m = p->top->m;
-  inner->f = p->top->f;
-  inner->is_repeated = true;
-  p->top = inner;
-
-  return true;
-}
-
-static void end_array(upb_json_parser *p) {
-  upb_selector_t sel;
-
-  UPB_ASSERT(p->top > p->stack);
-
-  p->top--;
-
-  if (p->top->is_unknown_field) {
+  if (jsondec_peek(d) == JD_NULL && !jsondec_isvalue(f)) {
+    /* JSON "null" indicates a default value, so no need to set anything. */
+    jsondec_null(d);
     return;
   }
 
-  sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSEQ);
-  upb_sink_endseq(p->top->sink, sel);
+  preserved = d->debug_field;
+  d->debug_field = f;
 
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_LISTVALUE)) {
-    end_listvalue_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-  }
-
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_VALUE)) {
-    end_value_object(p);
-    if (!is_top_level(p)) {
-      end_subobject(p);
-    }
-  }
-}
-
-static void start_object(upb_json_parser *p) {
-  if (!p->top->is_map && p->top->m != NULL) {
-    upb_sink_startmsg(p->top->sink);
-  }
-}
-
-static void end_object(upb_json_parser *p) {
-  if (!p->top->is_map && p->top->m != NULL) {
-    upb_sink_endmsg(p->top->sink, p->status);
-  }
-}
-
-static void start_any_object(upb_json_parser *p, const char *ptr) {
-  start_object(p);
-  p->top->any_frame->before_type_url_start = ptr;
-  p->top->any_frame->before_type_url_end = ptr;
-}
-
-static bool end_any_object(upb_json_parser *p, const char *ptr) {
-  const char *value_membername = "value";
-  bool is_well_known_packed = false;
-  const char *packed_end = ptr + 1;
-  upb_selector_t sel;
-  upb_jsonparser_frame *inner;
-
-  if (json_parser_any_frame_has_value(p->top->any_frame) &&
-      !json_parser_any_frame_has_type_url(p->top->any_frame)) {
-    upb_status_seterrmsg(p->status, "No valid type url");
-    return false;
-  }
-
-  /* Well known types data is represented as value field. */
-  if (upb_msgdef_wellknowntype(p->top->any_frame->parser->top->m) !=
-          UPB_WELLKNOWN_UNSPECIFIED) {
-    is_well_known_packed = true;
-
-    if (json_parser_any_frame_has_value_before_type_url(p->top->any_frame)) {
-      p->top->any_frame->before_type_url_start =
-          memchr(p->top->any_frame->before_type_url_start, ':',
-                 p->top->any_frame->before_type_url_end -
-                 p->top->any_frame->before_type_url_start);
-      if (p->top->any_frame->before_type_url_start == NULL) {
-        upb_status_seterrmsg(p->status, "invalid data for well known type.");
-        return false;
-      }
-      p->top->any_frame->before_type_url_start++;
-    }
-
-    if (json_parser_any_frame_has_value_after_type_url(p->top->any_frame)) {
-      p->top->any_frame->after_type_url_start =
-          memchr(p->top->any_frame->after_type_url_start, ':',
-                 (ptr + 1) -
-                 p->top->any_frame->after_type_url_start);
-      if (p->top->any_frame->after_type_url_start == NULL) {
-        upb_status_seterrmsg(p->status, "Invalid data for well known type.");
-        return false;
-      }
-      p->top->any_frame->after_type_url_start++;
-      packed_end = ptr;
-    }
-  }
-
-  if (json_parser_any_frame_has_value_before_type_url(p->top->any_frame)) {
-    if (!parse(p->top->any_frame->parser, NULL,
-               p->top->any_frame->before_type_url_start,
-               p->top->any_frame->before_type_url_end -
-               p->top->any_frame->before_type_url_start, NULL)) {
-      return false;
-    }
+  if (upb_fielddef_ismap(f)) {
+    jsondec_map(d, msg, f);
+  } else if (upb_fielddef_isseq(f)) {
+    jsondec_array(d, msg, f);
+  } else if (upb_fielddef_issubmsg(f)) {
+    upb_msg *submsg = upb_msg_mutable(msg, f, d->arena).msg;
+    const upb_msgdef *subm = upb_fielddef_msgsubdef(f);
+    jsondec_tomsg(d, submsg, subm);
   } else {
-    if (!is_well_known_packed) {
-      if (!parse(p->top->any_frame->parser, NULL, "{", 1, NULL)) {
-        return false;
-      }
+    upb_msgval val = jsondec_value(d, f);
+    upb_msg_set(msg, f, val, d->arena);
+  }
+
+  d->debug_field = preserved;
+}
+
+static void jsondec_object(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  jsondec_objstart(d);
+  while (jsondec_objnext(d)) jsondec_field(d, msg, m);
+  jsondec_objend(d);
+}
+
+static upb_msgval jsondec_value(jsondec *d, const upb_fielddef *f) {
+  switch (upb_fielddef_type(f)) {
+    case UPB_TYPE_BOOL:
+      return jsondec_bool(d, f);
+    case UPB_TYPE_FLOAT:
+    case UPB_TYPE_DOUBLE:
+      return jsondec_double(d, f);
+    case UPB_TYPE_UINT32:
+    case UPB_TYPE_UINT64:
+      return jsondec_uint(d, f);
+    case UPB_TYPE_INT32:
+    case UPB_TYPE_INT64:
+      return jsondec_int(d, f);
+    case UPB_TYPE_STRING:
+    case UPB_TYPE_BYTES:
+      return jsondec_strfield(d, f);
+    case UPB_TYPE_ENUM:
+      return jsondec_enum(d, f);
+    case UPB_TYPE_MESSAGE:
+      return jsondec_msg(d, f);
+    default:
+      UPB_UNREACHABLE();
+  }
+}
+
+/* Well-known types ***********************************************************/
+
+static int jsondec_tsdigits(jsondec *d, const char **ptr, size_t digits,
+                            const char *after) {
+  uint64_t val;
+  const char *p = *ptr;
+  const char *end = p + digits;
+  size_t after_len = after ? strlen(after) : 0;
+
+  assert(digits <= 9);  /* int can't overflow. */
+
+  if (jsondec_buftouint64(d, p, end, &val) != end ||
+      (after_len && memcmp(end, after, after_len) != 0)) {
+    jsondec_err(d, "Malformed timestamp");
+  }
+
+  *ptr = end + after_len;
+  return val;
+}
+
+static int jsondec_nanos(jsondec *d, const char **ptr, const char *end) {
+  uint64_t nanos = 0;
+  const char *p = *ptr;
+
+  if (p != end && *p == '.') {
+    const char *nano_end = jsondec_buftouint64(d, p + 1, end, &nanos);
+    int digits = nano_end - p - 1;
+    int exp_lg10 = 9 - digits;
+    if (digits > 9) {
+      jsondec_err(d, "Too many digits for partial seconds");
+    }
+    while (exp_lg10--) nanos *= 10;
+    *ptr = nano_end;
+  }
+
+  return nanos;
+}
+
+// jsondec_epochdays(1970, 1, 1) == 1970-01-01 == 0
+static int jsondec_epochdays(int y, int m, int d) {
+  unsigned year_base = 4800;  /* Before minimum year, divisible by 100 & 400 */
+  unsigned epoch = 2472632;   /* Days between year_base and 1970 (Unix epoch) */
+  unsigned carry = (unsigned)m - 3 > m;
+  unsigned m_adj = m - 3 + (carry ? 12 : 0);   /* Month, counting from March */
+  unsigned y_adj = y + year_base - carry;  /* Year, positive and March-based */
+  unsigned base_days = (365 * 4 + 1) * y_adj / 4;    /* Approx days for year */
+  unsigned centuries = y_adj / 100;
+  unsigned extra_leap_days = (3 * centuries + 3) / 4; /* base_days correction */
+  unsigned year_days = (367 * (m_adj + 1)) / 12 - 30;  /* Counting from March */
+  return base_days - extra_leap_days + year_days + (d - 1) - epoch;
+}
+
+static int64_t jsondec_unixtime(int y, int m, int d, int h, int min, int s) {
+  return (int64_t)jsondec_epochdays(y, m, d) * 86400 + h * 3600 + min * 60 + s;
+}
+
+static void jsondec_timestamp(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  upb_msgval seconds;
+  upb_msgval nanos;
+  upb_strview str = jsondec_string(d);
+  const char *ptr = str.data;
+  const char *end = ptr + str.size;
+
+  if (str.size < 20) goto malformed;
+
+  {
+    // 1972-01-01T01:00:00
+    int year = jsondec_tsdigits(d, &ptr, 4, "-");
+    int mon = jsondec_tsdigits(d, &ptr, 2, "-");
+    int day = jsondec_tsdigits(d, &ptr, 2, "T");
+    int hour = jsondec_tsdigits(d, &ptr, 2, ":");
+    int min = jsondec_tsdigits(d, &ptr, 2, ":");
+    int sec = jsondec_tsdigits(d, &ptr, 2, NULL);
+
+    seconds.int64_val = jsondec_unixtime(year, mon, day, hour, min, sec);
+  }
+
+  nanos.int32_val = jsondec_nanos(d, &ptr, end);
+
+  {
+    // [+-]08:00 or Z
+    int ofs = 0;
+    bool neg = false;
+
+    if (ptr == end) goto malformed;
+
+    switch (*ptr++) {
+      case '-':
+        neg = true;
+        /* Fallthrough intended. */
+      case '+':
+        if ((end - ptr) != 5) goto malformed;
+        ofs = jsondec_tsdigits(d, &ptr, 2, ":00");
+        ofs *= 60 * 60;
+        seconds.int64_val += (neg ? ofs : -ofs);
+        break;
+      case 'Z':
+        if (ptr != end) goto malformed;
+        break;
+      default:
+        goto malformed;
     }
   }
 
-  if (json_parser_any_frame_has_value_before_type_url(p->top->any_frame) &&
-      json_parser_any_frame_has_value_after_type_url(p->top->any_frame)) {
-    if (!parse(p->top->any_frame->parser, NULL, ",", 1, NULL)) {
-      return false;
+  if (seconds.int64_val < -62135596800) {
+    jsondec_err(d, "Timestamp out of range");
+  }
+
+  upb_msg_set(msg, upb_msgdef_itof(m, 1), seconds, d->arena);
+  upb_msg_set(msg, upb_msgdef_itof(m, 2), nanos, d->arena);
+  return;
+
+malformed:
+  jsondec_err(d, "Malformed timestamp");
+}
+
+static void jsondec_duration(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  upb_msgval seconds;
+  upb_msgval nanos;
+  upb_strview str = jsondec_string(d);
+  const char *ptr = str.data;
+  const char *end = ptr + str.size;
+
+  // "3.000000001s", "3s", etc.
+  ptr = jsondec_buftoint64(d, ptr, end, &seconds.int64_val);
+  nanos.int32_val = jsondec_nanos(d, &ptr, end);
+
+  if (end - ptr != 1 || *ptr != 's') {
+    jsondec_err(d, "Malformed duration");
+  }
+
+  if (seconds.int64_val < -315576000000LL || seconds.int64_val > 315576000000LL) {
+    jsondec_err(d, "Duration out of range");
+  }
+
+  if (seconds.int64_val < 0) {
+    nanos.int32_val = - nanos.int32_val;
+  }
+
+  upb_msg_set(msg, upb_msgdef_itof(m, 1), seconds, d->arena);
+  upb_msg_set(msg, upb_msgdef_itof(m, 2), nanos, d->arena);
+}
+
+static void jsondec_listvalue(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  const upb_fielddef *values_f = upb_msgdef_itof(m, 1);
+  const upb_msgdef *value_m = upb_fielddef_msgsubdef(values_f);
+  upb_array *values = upb_msg_mutable(msg, values_f, d->arena).array;
+
+  jsondec_arrstart(d);
+  while (jsondec_arrnext(d)) {
+    upb_msg *value_msg = upb_msg_new(value_m, d->arena);
+    upb_msgval value;
+    value.msg_val = value_msg;
+    upb_array_append(values, value, d->arena);
+    jsondec_wellknownvalue(d, value_msg, value_m);
+  }
+  jsondec_arrend(d);
+}
+
+static void jsondec_struct(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  const upb_fielddef *fields_f = upb_msgdef_itof(m, 1);
+  const upb_msgdef *entry_m = upb_fielddef_msgsubdef(fields_f);
+  const upb_fielddef *value_f = upb_msgdef_itof(entry_m, 2);
+  const upb_msgdef *value_m = upb_fielddef_msgsubdef(value_f);
+  upb_map *fields = upb_msg_mutable(msg, fields_f, d->arena).map;
+
+  jsondec_objstart(d);
+  while (jsondec_objnext(d)) {
+    upb_msgval key, value;
+    upb_msg *value_msg = upb_msg_new(value_m, d->arena);
+    key.str_val = jsondec_string(d);
+    value.msg_val = value_msg;
+    upb_map_set(fields, key, value, d->arena);
+    jsondec_entrysep(d);
+    jsondec_wellknownvalue(d, value_msg, value_m);
+  }
+  jsondec_objend(d);
+}
+
+static void jsondec_wellknownvalue(jsondec *d, upb_msg *msg,
+                                   const upb_msgdef *m) {
+  upb_msgval val;
+  const upb_fielddef *f;
+  upb_msg *submsg;
+
+  switch (jsondec_peek(d)) {
+    case JD_NUMBER:
+      /* double number_value = 2; */
+      f = upb_msgdef_itof(m, 2);
+      val.double_val = jsondec_number(d);
+      break;
+    case JD_STRING:
+      /* string string_value = 3; */
+      f = upb_msgdef_itof(m, 3);
+      val.str_val = jsondec_string(d);
+      break;
+    case JD_FALSE:
+      /* bool bool_value = 4; */
+      f = upb_msgdef_itof(m, 4);
+      val.bool_val = false;
+      jsondec_false(d);
+      break;
+    case JD_TRUE:
+      /* bool bool_value = 4; */
+      f = upb_msgdef_itof(m, 4);
+      val.bool_val = true;
+      jsondec_true(d);
+      break;
+    case JD_NULL:
+      /* NullValue null_value = 1; */
+      f = upb_msgdef_itof(m, 1);
+      val.int32_val = 0;
+      jsondec_null(d);
+      break;
+    /* Note: these cases return, because upb_msg_mutable() is enough. */
+    case JD_OBJECT:
+      /* Struct struct_value = 5; */
+      f = upb_msgdef_itof(m, 5);
+      submsg = upb_msg_mutable(msg, f, d->arena).msg;
+      jsondec_struct(d, submsg, upb_fielddef_msgsubdef(f));
+      return;
+    case JD_ARRAY:
+      /* ListValue list_value = 6; */
+      f = upb_msgdef_itof(m, 6);
+      submsg = upb_msg_mutable(msg, f, d->arena).msg;
+      jsondec_listvalue(d, submsg, upb_fielddef_msgsubdef(f));
+      return;
+    default:
+      UPB_UNREACHABLE();
+  }
+
+  upb_msg_set(msg, f, val, d->arena);
+}
+
+static upb_strview jsondec_mask(jsondec *d, const char *buf, const char *end) {
+  /* FieldMask fields grow due to inserted '_' characters, so we can't do the
+   * transform in place. */
+  const char *ptr = buf;
+  upb_strview ret;
+  char *out;
+
+  ret.size = end - ptr;
+  while (ptr < end) {
+    ret.size += (*ptr >= 'A' && *ptr <= 'Z');
+    ptr++;
+  }
+
+  out = upb_arena_malloc(d->arena, ret.size);
+  ptr = buf;
+  ret.data = out;
+
+  while (ptr < end) {
+    char ch = *ptr++;
+    if (ch >= 'A' && ch <= 'Z') {
+      *out++ = '_';
+      *out++ = ch + 32;
+    } else if (ch == '_') {
+      jsondec_err(d, "field mask may not contain '_'");
+    } else {
+      *out++ = ch;
     }
   }
 
-  if (json_parser_any_frame_has_value_after_type_url(p->top->any_frame)) {
-    if (!parse(p->top->any_frame->parser, NULL,
-               p->top->any_frame->after_type_url_start,
-               packed_end - p->top->any_frame->after_type_url_start, NULL)) {
-      return false;
+  return ret;
+}
+
+static void jsondec_fieldmask(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  /* repeated string paths = 1; */
+  const upb_fielddef *paths_f = upb_msgdef_itof(m, 1);
+  upb_array *arr = upb_msg_mutable(msg, paths_f, d->arena).array;
+  upb_strview str = jsondec_string(d);
+  const char *ptr = str.data;
+  const char *end = ptr + str.size;
+  upb_msgval val;
+
+  while (ptr < end) {
+    const char *elem_end = memchr(ptr, ',', end - ptr);
+    if (elem_end) {
+      val.str_val = jsondec_mask(d, ptr, elem_end);
+      ptr = elem_end + 1;
+    } else {
+      val.str_val = jsondec_mask(d, ptr, end);
+      ptr = end;
     }
+    upb_array_append(arr, val, d->arena);
+  }
+}
+
+static void jsondec_anyfield(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  if (upb_msgdef_wellknowntype(m) == UPB_WELLKNOWN_UNSPECIFIED) {
+    /* For regular types: {"@type": "[user type]", "f1": <V1>, "f2": <V2>}
+     * where f1, f2, etc. are the normal fields of this type. */
+    jsondec_field(d, msg, m);
   } else {
-    if (!is_well_known_packed) {
-      if (!parse(p->top->any_frame->parser, NULL, "}", 1, NULL)) {
-        return false;
+    /* For well-known types: {"@type": "[well-known type]", "value": <X>}
+     * where <X> is whatever encoding the WKT normally uses. */
+    upb_strview str = jsondec_string(d);
+    jsondec_entrysep(d);
+    if (!jsondec_streql(str, "value")) {
+      jsondec_err(d, "Key for well-known type must be 'value'");
+    }
+    jsondec_wellknown(d, msg, m);
+  }
+}
+
+static const upb_msgdef *jsondec_typeurl(jsondec *d, upb_msg *msg,
+                                         const upb_msgdef *m) {
+  const upb_fielddef *type_url_f = upb_msgdef_itof(m, 1);
+  const upb_msgdef *type_m;
+  upb_strview type_url = jsondec_string(d);
+  const char *end = type_url.data + type_url.size;
+  const char *ptr = end;
+  upb_msgval val;
+
+  val.str_val = type_url;
+  upb_msg_set(msg, type_url_f, val, d->arena);
+
+  /* Find message name after the last '/' */
+  while (ptr > type_url.data && *--ptr != '/') {}
+
+  if (ptr == type_url.data || ptr == end) {
+    jsondec_err(d, "Type url must have at least one '/' and non-empty host");
+  }
+
+  ptr++;
+  type_m = upb_symtab_lookupmsg2(d->any_pool, ptr, end - ptr);
+
+  if (!type_m) {
+    jsondec_err(d, "Type was not found");
+  }
+
+  return type_m;
+}
+
+static void jsondec_any(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  /* string type_url = 1;
+   * bytes value = 2; */
+  const upb_fielddef *value_f = upb_msgdef_itof(m, 2);
+  upb_msg *any_msg;
+  const upb_msgdef *any_m = NULL;
+  const char *pre_type_data = NULL;
+  const char *pre_type_end = NULL;
+  upb_msgval encoded;
+
+  jsondec_objstart(d);
+
+  /* Scan looking for "@type", which is not necessarily first. */
+  while (!any_m && jsondec_objnext(d)) {
+    const char *start = d->ptr;
+    upb_strview name = jsondec_string(d);
+    jsondec_entrysep(d);
+    if (jsondec_streql(name, "@type")) {
+      any_m = jsondec_typeurl(d, msg, m);
+      if (pre_type_data) {
+        pre_type_end = start;
+        while (*pre_type_end != ',') pre_type_end--;
       }
+    } else {
+      if (!pre_type_data) pre_type_data = start;
+      jsondec_skipval(d);
     }
   }
 
-  if (!end(p->top->any_frame->parser, NULL)) {
-    return false;
+  if (!any_m) {
+    jsondec_err(d, "Any object didn't contain a '@type' field");
   }
 
-  p->top->is_any = false;
+  any_msg = upb_msg_new(any_m, d->arena);
 
-  /* Set value */
-  start_member(p);
-  capture_begin(p, value_membername);
-  capture_end(p, value_membername + 5);
-  end_membername(p);
+  if (pre_type_data) {
+    size_t len = pre_type_end - pre_type_data + 1;
+    char *tmp = upb_arena_malloc(d->arena, len);
+    memcpy(tmp, pre_type_data, len - 1);
+    tmp[len - 1] = '}';
+    const char *saved_ptr = d->ptr;
+    const char *saved_end = d->end;
+    d->ptr = tmp;
+    d->end = tmp + len;
+    d->is_first = true;
+    while (jsondec_objnext(d)) {
+      jsondec_anyfield(d, any_msg, any_m);
+    }
+    d->ptr = saved_ptr;
+    d->end = saved_end;
+  }
 
-  if (!check_stack(p)) return false;
-  inner = p->top + 1;
+  while (jsondec_objnext(d)) {
+    jsondec_anyfield(d, any_msg, any_m);
+  }
 
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STARTSTR);
-  upb_sink_startstr(p->top->sink, sel, 0, &inner->sink);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_STRING);
-  upb_sink_putstring(inner->sink, sel, p->top->any_frame->stringsink.ptr,
-                     p->top->any_frame->stringsink.len, NULL);
-  sel = getsel_for_handlertype(p, UPB_HANDLER_ENDSTR);
-  upb_sink_endstr(inner->sink, sel);
+  jsondec_objend(d);
 
-  end_member(p);
+  encoded.str_val.data = upb_encode(any_msg, upb_msgdef_layout(any_m), d->arena,
+                                    &encoded.str_val.size);
+  upb_msg_set(msg, value_f, encoded, d->arena);
+}
 
-  end_object(p);
+static void jsondec_wrapper(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  const upb_fielddef *value_f = upb_msgdef_itof(m, 1);
+  upb_msgval val = jsondec_value(d, value_f);
+  upb_msg_set(msg, value_f, val, d->arena);
+}
 
-  /* Deallocate any parse frame. */
-  json_parser_any_frame_free(p->top->any_frame);
+static void jsondec_wellknown(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
+  switch (upb_msgdef_wellknowntype(m)) {
+    case UPB_WELLKNOWN_ANY:
+      jsondec_any(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_FIELDMASK:
+      jsondec_fieldmask(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_DURATION:
+      jsondec_duration(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_TIMESTAMP:
+      jsondec_timestamp(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_VALUE:
+      jsondec_wellknownvalue(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_LISTVALUE:
+      jsondec_listvalue(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_STRUCT:
+      jsondec_struct(d, msg, m);
+      break;
+    case UPB_WELLKNOWN_DOUBLEVALUE:
+    case UPB_WELLKNOWN_FLOATVALUE:
+    case UPB_WELLKNOWN_INT64VALUE:
+    case UPB_WELLKNOWN_UINT64VALUE:
+    case UPB_WELLKNOWN_INT32VALUE:
+    case UPB_WELLKNOWN_UINT32VALUE:
+    case UPB_WELLKNOWN_STRINGVALUE:
+    case UPB_WELLKNOWN_BYTESVALUE:
+    case UPB_WELLKNOWN_BOOLVALUE:
+      jsondec_wrapper(d, msg, m);
+      break;
+    default:
+      UPB_UNREACHABLE();
+  }
+}
 
+bool upb_json_decode(const char *buf, size_t size, upb_msg *msg,
+                     const upb_msgdef *m, const upb_symtab *any_pool,
+                     int options, upb_arena *arena, upb_status *status) {
+  jsondec d;
+  d.ptr = buf;
+  d.end = buf + size;
+  d.arena = arena;
+  d.any_pool = any_pool;
+  d.status = status;
+  d.options = options;
+  d.depth = 64;
+  d.line = 1;
+  d.debug_field = NULL;
+  d.is_first = false;
+
+  if (setjmp(d.err)) return false;
+
+  jsondec_object(&d, msg, m);
   return true;
 }
-
-static bool is_string_wrapper(const upb_msgdef *m) {
-  upb_wellknowntype_t type = upb_msgdef_wellknowntype(m);
-  return type == UPB_WELLKNOWN_STRINGVALUE ||
-         type == UPB_WELLKNOWN_BYTESVALUE;
-}
-
-static bool is_fieldmask(const upb_msgdef *m) {
-  upb_wellknowntype_t type = upb_msgdef_wellknowntype(m);
-  return type == UPB_WELLKNOWN_FIELDMASK;
-}
-
-static void start_fieldmask_object(upb_json_parser *p) {
-  const char *membername = "paths";
-
-  start_object(p);
-
-  /* Set up context for parsing value */
-  start_member(p);
-  capture_begin(p, membername);
-  capture_end(p, membername + 5);
-  end_membername(p);
-
-  start_array(p);
-}
-
-static void end_fieldmask_object(upb_json_parser *p) {
-  end_array(p);
-  end_member(p);
-  end_object(p);
-}
-
-static void start_wrapper_object(upb_json_parser *p) {
-  const char *membername = "value";
-
-  start_object(p);
-
-  /* Set up context for parsing value */
-  start_member(p);
-  capture_begin(p, membername);
-  capture_end(p, membername + 5);
-  end_membername(p);
-}
-
-static void end_wrapper_object(upb_json_parser *p) {
-  end_member(p);
-  end_object(p);
-}
-
-static void start_value_object(upb_json_parser *p, int value_type) {
-  const char *nullmember = "null_value";
-  const char *numbermember = "number_value";
-  const char *stringmember = "string_value";
-  const char *boolmember = "bool_value";
-  const char *structmember = "struct_value";
-  const char *listmember = "list_value";
-  const char *membername = "";
-
-  switch (value_type) {
-    case VALUE_NULLVALUE:
-      membername = nullmember;
-      break;
-    case VALUE_NUMBERVALUE:
-      membername = numbermember;
-      break;
-    case VALUE_STRINGVALUE:
-      membername = stringmember;
-      break;
-    case VALUE_BOOLVALUE:
-      membername = boolmember;
-      break;
-    case VALUE_STRUCTVALUE:
-      membername = structmember;
-      break;
-    case VALUE_LISTVALUE:
-      membername = listmember;
-      break;
-  }
-
-  start_object(p);
-
-  /* Set up context for parsing value */
-  start_member(p);
-  capture_begin(p, membername);
-  capture_end(p, membername + strlen(membername));
-  end_membername(p);
-}
-
-static void end_value_object(upb_json_parser *p) {
-  end_member(p);
-  end_object(p);
-}
-
-static void start_listvalue_object(upb_json_parser *p) {
-  const char *membername = "values";
-
-  start_object(p);
-
-  /* Set up context for parsing value */
-  start_member(p);
-  capture_begin(p, membername);
-  capture_end(p, membername + strlen(membername));
-  end_membername(p);
-}
-
-static void end_listvalue_object(upb_json_parser *p) {
-  end_member(p);
-  end_object(p);
-}
-
-static void start_structvalue_object(upb_json_parser *p) {
-  const char *membername = "fields";
-
-  start_object(p);
-
-  /* Set up context for parsing value */
-  start_member(p);
-  capture_begin(p, membername);
-  capture_end(p, membername + strlen(membername));
-  end_membername(p);
-}
-
-static void end_structvalue_object(upb_json_parser *p) {
-  end_member(p);
-  end_object(p);
-}
-
-static bool is_top_level(upb_json_parser *p) {
-  return p->top == p->stack && p->top->f == NULL && !p->top->is_unknown_field;
-}
-
-static bool is_wellknown_msg(upb_json_parser *p, upb_wellknowntype_t type) {
-  return p->top->m != NULL && upb_msgdef_wellknowntype(p->top->m) == type;
-}
-
-static bool is_wellknown_field(upb_json_parser *p, upb_wellknowntype_t type) {
-  return p->top->f != NULL &&
-         upb_fielddef_issubmsg(p->top->f) &&
-         (upb_msgdef_wellknowntype(upb_fielddef_msgsubdef(p->top->f))
-              == type);
-}
-
-static bool does_number_wrapper_start(upb_json_parser *p) {
-  return p->top->f != NULL &&
-         upb_fielddef_issubmsg(p->top->f) &&
-         upb_msgdef_isnumberwrapper(upb_fielddef_msgsubdef(p->top->f));
-}
-
-static bool does_number_wrapper_end(upb_json_parser *p) {
-  return p->top->m != NULL && upb_msgdef_isnumberwrapper(p->top->m);
-}
-
-static bool is_number_wrapper_object(upb_json_parser *p) {
-  return p->top->m != NULL && upb_msgdef_isnumberwrapper(p->top->m);
-}
-
-static bool does_string_wrapper_start(upb_json_parser *p) {
-  return p->top->f != NULL &&
-         upb_fielddef_issubmsg(p->top->f) &&
-         is_string_wrapper(upb_fielddef_msgsubdef(p->top->f));
-}
-
-static bool does_string_wrapper_end(upb_json_parser *p) {
-  return p->top->m != NULL && is_string_wrapper(p->top->m);
-}
-
-static bool is_string_wrapper_object(upb_json_parser *p) {
-  return p->top->m != NULL && is_string_wrapper(p->top->m);
-}
-
-static bool does_fieldmask_start(upb_json_parser *p) {
-  return p->top->f != NULL &&
-         upb_fielddef_issubmsg(p->top->f) &&
-         is_fieldmask(upb_fielddef_msgsubdef(p->top->f));
-}
-
-static bool does_fieldmask_end(upb_json_parser *p) {
-  return p->top->m != NULL && is_fieldmask(p->top->m);
-}
-
-#define CHECK_RETURN_TOP(x) if (!(x)) goto error
-
-
-/* The actual parser **********************************************************/
-
-/* What follows is the Ragel parser itself.  The language is specified in Ragel
- * and the actions call our C functions above.
- *
- * Ragel has an extensive set of functionality, and we use only a small part of
- * it.  There are many action types but we only use a few:
- *
- *   ">" -- transition into a machine
- *   "%" -- transition out of a machine
- *   "@" -- transition into a final state of a machine.
- *
- * "@" transitions are tricky because a machine can transition into a final
- * state repeatedly.  But in some cases we know this can't happen, for example
- * a string which is delimited by a final '"' can only transition into its
- * final state once, when the closing '"' is seen. */
-
-
-#line 2794 "upb/json/parser.rl"
-
-
-
-#line 2597 "upb/json/parser.c"
-static const char _json_actions[] = {
-	0, 1, 0, 1, 1, 1, 3, 1, 
-	4, 1, 6, 1, 7, 1, 8, 1, 
-	9, 1, 11, 1, 12, 1, 13, 1, 
-	14, 1, 15, 1, 16, 1, 17, 1, 
-	18, 1, 19, 1, 20, 1, 22, 1, 
-	23, 1, 24, 1, 35, 1, 37, 1, 
-	39, 1, 40, 1, 42, 1, 43, 1, 
-	44, 1, 46, 1, 48, 1, 49, 1, 
-	50, 1, 51, 1, 53, 1, 54, 2, 
-	4, 9, 2, 5, 6, 2, 7, 3, 
-	2, 7, 9, 2, 21, 26, 2, 25, 
-	10, 2, 27, 28, 2, 29, 30, 2, 
-	32, 34, 2, 33, 31, 2, 38, 36, 
-	2, 40, 42, 2, 45, 2, 2, 46, 
-	54, 2, 47, 36, 2, 49, 54, 2, 
-	50, 54, 2, 51, 54, 2, 52, 41, 
-	2, 53, 54, 3, 32, 34, 35, 4, 
-	21, 26, 27, 28
-};
-
-static const short _json_key_offsets[] = {
-	0, 0, 12, 13, 18, 23, 28, 29, 
-	30, 31, 32, 33, 34, 35, 36, 37, 
-	38, 43, 44, 48, 53, 58, 63, 67, 
-	71, 74, 77, 79, 83, 87, 89, 91, 
-	96, 98, 100, 109, 115, 121, 127, 133, 
-	135, 139, 142, 144, 146, 149, 150, 154, 
-	156, 158, 160, 162, 163, 165, 167, 168, 
-	170, 172, 173, 175, 177, 178, 180, 182, 
-	183, 185, 187, 191, 193, 195, 196, 197, 
-	198, 199, 201, 206, 208, 210, 212, 221, 
-	222, 222, 222, 227, 232, 237, 238, 239, 
-	240, 241, 241, 242, 243, 244, 244, 245, 
-	246, 247, 247, 252, 253, 257, 262, 267, 
-	272, 276, 276, 279, 282, 285, 288, 291, 
-	294, 294, 294, 294, 294, 294
-};
-
-static const char _json_trans_keys[] = {
-	32, 34, 45, 91, 102, 110, 116, 123, 
-	9, 13, 48, 57, 34, 32, 93, 125, 
-	9, 13, 32, 44, 93, 9, 13, 32, 
-	93, 125, 9, 13, 97, 108, 115, 101, 
-	117, 108, 108, 114, 117, 101, 32, 34, 
-	125, 9, 13, 34, 32, 58, 9, 13, 
-	32, 93, 125, 9, 13, 32, 44, 125, 
-	9, 13, 32, 44, 125, 9, 13, 32, 
-	34, 9, 13, 45, 48, 49, 57, 48, 
-	49, 57, 46, 69, 101, 48, 57, 69, 
-	101, 48, 57, 43, 45, 48, 57, 48, 
-	57, 48, 57, 46, 69, 101, 48, 57, 
-	34, 92, 34, 92, 34, 47, 92, 98, 
-	102, 110, 114, 116, 117, 48, 57, 65, 
-	70, 97, 102, 48, 57, 65, 70, 97, 
-	102, 48, 57, 65, 70, 97, 102, 48, 
-	57, 65, 70, 97, 102, 34, 92, 45, 
-	48, 49, 57, 48, 49, 57, 46, 115, 
-	48, 57, 115, 48, 57, 34, 46, 115, 
-	48, 57, 48, 57, 48, 57, 48, 57, 
-	48, 57, 45, 48, 57, 48, 57, 45, 
-	48, 57, 48, 57, 84, 48, 57, 48, 
-	57, 58, 48, 57, 48, 57, 58, 48, 
-	57, 48, 57, 43, 45, 46, 90, 48, 
-	57, 48, 57, 58, 48, 48, 34, 48, 
-	57, 43, 45, 90, 48, 57, 34, 44, 
-	34, 44, 34, 44, 34, 45, 91, 102, 
-	110, 116, 123, 48, 57, 34, 32, 93, 
-	125, 9, 13, 32, 44, 93, 9, 13, 
-	32, 93, 125, 9, 13, 97, 108, 115, 
-	101, 117, 108, 108, 114, 117, 101, 32, 
-	34, 125, 9, 13, 34, 32, 58, 9, 
-	13, 32, 93, 125, 9, 13, 32, 44, 
-	125, 9, 13, 32, 44, 125, 9, 13, 
-	32, 34, 9, 13, 32, 9, 13, 32, 
-	9, 13, 32, 9, 13, 32, 9, 13, 
-	32, 9, 13, 32, 9, 13, 0
-};
-
-static const char _json_single_lengths[] = {
-	0, 8, 1, 3, 3, 3, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 1, 
-	3, 1, 2, 3, 3, 3, 2, 2, 
-	1, 3, 0, 2, 2, 0, 0, 3, 
-	2, 2, 9, 0, 0, 0, 0, 2, 
-	2, 1, 2, 0, 1, 1, 2, 0, 
-	0, 0, 0, 1, 0, 0, 1, 0, 
-	0, 1, 0, 0, 1, 0, 0, 1, 
-	0, 0, 4, 0, 0, 1, 1, 1, 
-	1, 0, 3, 2, 2, 2, 7, 1, 
-	0, 0, 3, 3, 3, 1, 1, 1, 
-	1, 0, 1, 1, 1, 0, 1, 1, 
-	1, 0, 3, 1, 2, 3, 3, 3, 
-	2, 0, 1, 1, 1, 1, 1, 1, 
-	0, 0, 0, 0, 0, 0
-};
-
-static const char _json_range_lengths[] = {
-	0, 2, 0, 1, 1, 1, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	1, 0, 1, 1, 1, 1, 1, 1, 
-	1, 0, 1, 1, 1, 1, 1, 1, 
-	0, 0, 0, 3, 3, 3, 3, 0, 
-	1, 1, 0, 1, 1, 0, 1, 1, 
-	1, 1, 1, 0, 1, 1, 0, 1, 
-	1, 0, 1, 1, 0, 1, 1, 0, 
-	1, 1, 0, 1, 1, 0, 0, 0, 
-	0, 1, 1, 0, 0, 0, 1, 0, 
-	0, 0, 1, 1, 1, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 1, 0, 1, 1, 1, 1, 
-	1, 0, 1, 1, 1, 1, 1, 1, 
-	0, 0, 0, 0, 0, 0
-};
-
-static const short _json_index_offsets[] = {
-	0, 0, 11, 13, 18, 23, 28, 30, 
-	32, 34, 36, 38, 40, 42, 44, 46, 
-	48, 53, 55, 59, 64, 69, 74, 78, 
-	82, 85, 89, 91, 95, 99, 101, 103, 
-	108, 111, 114, 124, 128, 132, 136, 140, 
-	143, 147, 150, 153, 155, 158, 160, 164, 
-	166, 168, 170, 172, 174, 176, 178, 180, 
-	182, 184, 186, 188, 190, 192, 194, 196, 
-	198, 200, 202, 207, 209, 211, 213, 215, 
-	217, 219, 221, 226, 229, 232, 235, 244, 
-	246, 247, 248, 253, 258, 263, 265, 267, 
-	269, 271, 272, 274, 276, 278, 279, 281, 
-	283, 285, 286, 291, 293, 297, 302, 307, 
-	312, 316, 317, 320, 323, 326, 329, 332, 
-	335, 336, 337, 338, 339, 340
-};
-
-static const unsigned char _json_indicies[] = {
-	0, 2, 3, 4, 5, 6, 7, 8, 
-	0, 3, 1, 9, 1, 11, 12, 1, 
-	11, 10, 13, 14, 12, 13, 1, 14, 
-	1, 1, 14, 10, 15, 1, 16, 1, 
-	17, 1, 18, 1, 19, 1, 20, 1, 
-	21, 1, 22, 1, 23, 1, 24, 1, 
-	25, 26, 27, 25, 1, 28, 1, 29, 
-	30, 29, 1, 30, 1, 1, 30, 31, 
-	32, 33, 34, 32, 1, 35, 36, 27, 
-	35, 1, 36, 26, 36, 1, 37, 38, 
-	39, 1, 38, 39, 1, 41, 42, 42, 
-	40, 43, 1, 42, 42, 43, 40, 44, 
-	44, 45, 1, 45, 1, 45, 40, 41, 
-	42, 42, 39, 40, 47, 48, 46, 50, 
-	51, 49, 52, 52, 52, 52, 52, 52, 
-	52, 52, 53, 1, 54, 54, 54, 1, 
-	55, 55, 55, 1, 56, 56, 56, 1, 
-	57, 57, 57, 1, 59, 60, 58, 61, 
-	62, 63, 1, 64, 65, 1, 66, 67, 
-	1, 68, 1, 67, 68, 1, 69, 1, 
-	66, 67, 65, 1, 70, 1, 71, 1, 
-	72, 1, 73, 1, 74, 1, 75, 1, 
-	76, 1, 77, 1, 78, 1, 79, 1, 
-	80, 1, 81, 1, 82, 1, 83, 1, 
-	84, 1, 85, 1, 86, 1, 87, 1, 
-	88, 1, 89, 89, 90, 91, 1, 92, 
-	1, 93, 1, 94, 1, 95, 1, 96, 
-	1, 97, 1, 98, 1, 99, 99, 100, 
-	98, 1, 102, 1, 101, 104, 105, 103, 
-	1, 1, 101, 106, 107, 108, 109, 110, 
-	111, 112, 107, 1, 113, 1, 114, 115, 
-	117, 118, 1, 117, 116, 119, 120, 118, 
-	119, 1, 120, 1, 1, 120, 116, 121, 
-	1, 122, 1, 123, 1, 124, 1, 125, 
-	126, 1, 127, 1, 128, 1, 129, 130, 
-	1, 131, 1, 132, 1, 133, 134, 135, 
-	136, 134, 1, 137, 1, 138, 139, 138, 
-	1, 139, 1, 1, 139, 140, 141, 142, 
-	143, 141, 1, 144, 145, 136, 144, 1, 
-	145, 135, 145, 1, 146, 147, 147, 1, 
-	148, 148, 1, 149, 149, 1, 150, 150, 
-	1, 151, 151, 1, 152, 152, 1, 1, 
-	1, 1, 1, 1, 1, 0
-};
-
-static const char _json_trans_targs[] = {
-	1, 0, 2, 107, 3, 6, 10, 13, 
-	16, 106, 4, 3, 106, 4, 5, 7, 
-	8, 9, 108, 11, 12, 109, 14, 15, 
-	110, 16, 17, 111, 18, 18, 19, 20, 
-	21, 22, 111, 21, 22, 24, 25, 31, 
-	112, 26, 28, 27, 29, 30, 33, 113, 
-	34, 33, 113, 34, 32, 35, 36, 37, 
-	38, 39, 33, 113, 34, 41, 42, 46, 
-	42, 46, 43, 45, 44, 114, 48, 49, 
-	50, 51, 52, 53, 54, 55, 56, 57, 
-	58, 59, 60, 61, 62, 63, 64, 65, 
-	66, 67, 73, 72, 68, 69, 70, 71, 
-	72, 115, 74, 67, 72, 76, 116, 76, 
-	116, 77, 79, 81, 82, 85, 90, 94, 
-	98, 80, 117, 117, 83, 82, 80, 83, 
-	84, 86, 87, 88, 89, 117, 91, 92, 
-	93, 117, 95, 96, 97, 117, 98, 99, 
-	105, 100, 100, 101, 102, 103, 104, 105, 
-	103, 104, 117, 106, 106, 106, 106, 106, 
-	106
-};
-
-static const unsigned char _json_trans_actions[] = {
-	0, 0, 113, 107, 53, 0, 0, 0, 
-	125, 59, 45, 0, 55, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 101, 51, 47, 0, 0, 45, 
-	49, 49, 104, 0, 0, 0, 0, 0, 
-	3, 0, 0, 0, 0, 0, 5, 15, 
-	0, 0, 71, 7, 13, 0, 74, 9, 
-	9, 9, 77, 80, 11, 37, 37, 37, 
-	0, 0, 0, 39, 0, 41, 86, 0, 
-	0, 0, 17, 19, 0, 21, 23, 0, 
-	25, 27, 0, 29, 31, 0, 33, 35, 
-	0, 135, 83, 135, 0, 0, 0, 0, 
-	0, 92, 0, 89, 89, 98, 43, 0, 
-	131, 95, 113, 107, 53, 0, 0, 0, 
-	125, 59, 69, 110, 45, 0, 55, 0, 
-	0, 0, 0, 0, 0, 119, 0, 0, 
-	0, 122, 0, 0, 0, 116, 0, 101, 
-	51, 47, 0, 0, 45, 49, 49, 104, 
-	0, 0, 128, 0, 57, 63, 65, 61, 
-	67
-};
-
-static const unsigned char _json_eof_actions[] = {
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 1, 0, 1, 0, 0, 1, 1, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 57, 63, 65, 61, 67, 
-	0, 0, 0, 0, 0, 0
-};
-
-static const int json_start = 1;
-
-static const int json_en_number_machine = 23;
-static const int json_en_string_machine = 32;
-static const int json_en_duration_machine = 40;
-static const int json_en_timestamp_machine = 47;
-static const int json_en_fieldmask_machine = 75;
-static const int json_en_value_machine = 78;
-static const int json_en_main = 1;
-
-
-#line 2797 "upb/json/parser.rl"
-
-size_t parse(void *closure, const void *hd, const char *buf, size_t size,
-             const upb_bufhandle *handle) {
-  upb_json_parser *parser = closure;
-
-  /* Variables used by Ragel's generated code. */
-  int cs = parser->current_state;
-  int *stack = parser->parser_stack;
-  int top = parser->parser_top;
-
-  const char *p = buf;
-  const char *pe = buf + size;
-  const char *eof = &eof_ch;
-
-  parser->handle = handle;
-
-  UPB_UNUSED(hd);
-  UPB_UNUSED(handle);
-
-  capture_resume(parser, buf);
-
-  
-#line 2875 "upb/json/parser.c"
-	{
-	int _klen;
-	unsigned int _trans;
-	const char *_acts;
-	unsigned int _nacts;
-	const char *_keys;
-
-	if ( p == pe )
-		goto _test_eof;
-	if ( cs == 0 )
-		goto _out;
-_resume:
-	_keys = _json_trans_keys + _json_key_offsets[cs];
-	_trans = _json_index_offsets[cs];
-
-	_klen = _json_single_lengths[cs];
-	if ( _klen > 0 ) {
-		const char *_lower = _keys;
-		const char *_mid;
-		const char *_upper = _keys + _klen - 1;
-		while (1) {
-			if ( _upper < _lower )
-				break;
-
-			_mid = _lower + ((_upper-_lower) >> 1);
-			if ( (*p) < *_mid )
-				_upper = _mid - 1;
-			else if ( (*p) > *_mid )
-				_lower = _mid + 1;
-			else {
-				_trans += (unsigned int)(_mid - _keys);
-				goto _match;
-			}
-		}
-		_keys += _klen;
-		_trans += _klen;
-	}
-
-	_klen = _json_range_lengths[cs];
-	if ( _klen > 0 ) {
-		const char *_lower = _keys;
-		const char *_mid;
-		const char *_upper = _keys + (_klen<<1) - 2;
-		while (1) {
-			if ( _upper < _lower )
-				break;
-
-			_mid = _lower + (((_upper-_lower) >> 1) & ~1);
-			if ( (*p) < _mid[0] )
-				_upper = _mid - 2;
-			else if ( (*p) > _mid[1] )
-				_lower = _mid + 2;
-			else {
-				_trans += (unsigned int)((_mid - _keys)>>1);
-				goto _match;
-			}
-		}
-		_trans += _klen;
-	}
-
-_match:
-	_trans = _json_indicies[_trans];
-	cs = _json_trans_targs[_trans];
-
-	if ( _json_trans_actions[_trans] == 0 )
-		goto _again;
-
-	_acts = _json_actions + _json_trans_actions[_trans];
-	_nacts = (unsigned int) *_acts++;
-	while ( _nacts-- > 0 )
-	{
-		switch ( *_acts++ )
-		{
-	case 1:
-#line 2602 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-	case 2:
-#line 2604 "upb/json/parser.rl"
-	{ p--; {stack[top++] = cs; cs = 23;goto _again;} }
-	break;
-	case 3:
-#line 2608 "upb/json/parser.rl"
-	{ start_text(parser, p); }
-	break;
-	case 4:
-#line 2609 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_text(parser, p)); }
-	break;
-	case 5:
-#line 2615 "upb/json/parser.rl"
-	{ start_hex(parser); }
-	break;
-	case 6:
-#line 2616 "upb/json/parser.rl"
-	{ hexdigit(parser, p); }
-	break;
-	case 7:
-#line 2617 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_hex(parser)); }
-	break;
-	case 8:
-#line 2623 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(escape(parser, p)); }
-	break;
-	case 9:
-#line 2629 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-	case 10:
-#line 2634 "upb/json/parser.rl"
-	{ start_year(parser, p); }
-	break;
-	case 11:
-#line 2635 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_year(parser, p)); }
-	break;
-	case 12:
-#line 2639 "upb/json/parser.rl"
-	{ start_month(parser, p); }
-	break;
-	case 13:
-#line 2640 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_month(parser, p)); }
-	break;
-	case 14:
-#line 2644 "upb/json/parser.rl"
-	{ start_day(parser, p); }
-	break;
-	case 15:
-#line 2645 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_day(parser, p)); }
-	break;
-	case 16:
-#line 2649 "upb/json/parser.rl"
-	{ start_hour(parser, p); }
-	break;
-	case 17:
-#line 2650 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_hour(parser, p)); }
-	break;
-	case 18:
-#line 2654 "upb/json/parser.rl"
-	{ start_minute(parser, p); }
-	break;
-	case 19:
-#line 2655 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_minute(parser, p)); }
-	break;
-	case 20:
-#line 2659 "upb/json/parser.rl"
-	{ start_second(parser, p); }
-	break;
-	case 21:
-#line 2660 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_second(parser, p)); }
-	break;
-	case 22:
-#line 2665 "upb/json/parser.rl"
-	{ start_duration_base(parser, p); }
-	break;
-	case 23:
-#line 2666 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_duration_base(parser, p)); }
-	break;
-	case 24:
-#line 2668 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-	case 25:
-#line 2673 "upb/json/parser.rl"
-	{ start_timestamp_base(parser); }
-	break;
-	case 26:
-#line 2675 "upb/json/parser.rl"
-	{ start_timestamp_fraction(parser, p); }
-	break;
-	case 27:
-#line 2676 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_timestamp_fraction(parser, p)); }
-	break;
-	case 28:
-#line 2678 "upb/json/parser.rl"
-	{ start_timestamp_zone(parser, p); }
-	break;
-	case 29:
-#line 2679 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_timestamp_zone(parser, p)); }
-	break;
-	case 30:
-#line 2681 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-	case 31:
-#line 2686 "upb/json/parser.rl"
-	{ start_fieldmask_path_text(parser, p); }
-	break;
-	case 32:
-#line 2687 "upb/json/parser.rl"
-	{ end_fieldmask_path_text(parser, p); }
-	break;
-	case 33:
-#line 2692 "upb/json/parser.rl"
-	{ start_fieldmask_path(parser); }
-	break;
-	case 34:
-#line 2693 "upb/json/parser.rl"
-	{ end_fieldmask_path(parser); }
-	break;
-	case 35:
-#line 2699 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-	case 36:
-#line 2704 "upb/json/parser.rl"
-	{
-        if (is_wellknown_msg(parser, UPB_WELLKNOWN_TIMESTAMP)) {
-          {stack[top++] = cs; cs = 47;goto _again;}
-        } else if (is_wellknown_msg(parser, UPB_WELLKNOWN_DURATION)) {
-          {stack[top++] = cs; cs = 40;goto _again;}
-        } else if (is_wellknown_msg(parser, UPB_WELLKNOWN_FIELDMASK)) {
-          {stack[top++] = cs; cs = 75;goto _again;}
-        } else {
-          {stack[top++] = cs; cs = 32;goto _again;}
-        }
-      }
-	break;
-	case 37:
-#line 2717 "upb/json/parser.rl"
-	{ p--; {stack[top++] = cs; cs = 78;goto _again;} }
-	break;
-	case 38:
-#line 2722 "upb/json/parser.rl"
-	{
-        if (is_wellknown_msg(parser, UPB_WELLKNOWN_ANY)) {
-          start_any_member(parser, p);
-        } else {
-          start_member(parser);
-        }
-      }
-	break;
-	case 39:
-#line 2729 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_membername(parser)); }
-	break;
-	case 40:
-#line 2732 "upb/json/parser.rl"
-	{
-        if (is_wellknown_msg(parser, UPB_WELLKNOWN_ANY)) {
-          end_any_member(parser, p);
-        } else {
-          end_member(parser);
-        }
-      }
-	break;
-	case 41:
-#line 2743 "upb/json/parser.rl"
-	{
-        if (is_wellknown_msg(parser, UPB_WELLKNOWN_ANY)) {
-          start_any_object(parser, p);
-        } else {
-          start_object(parser);
-        }
-      }
-	break;
-	case 42:
-#line 2752 "upb/json/parser.rl"
-	{
-        if (is_wellknown_msg(parser, UPB_WELLKNOWN_ANY)) {
-          CHECK_RETURN_TOP(end_any_object(parser, p));
-        } else {
-          end_object(parser);
-        }
-      }
-	break;
-	case 43:
-#line 2764 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(start_array(parser)); }
-	break;
-	case 44:
-#line 2768 "upb/json/parser.rl"
-	{ end_array(parser); }
-	break;
-	case 45:
-#line 2773 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(start_number(parser, p)); }
-	break;
-	case 46:
-#line 2774 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_number(parser, p)); }
-	break;
-	case 47:
-#line 2776 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(start_stringval(parser)); }
-	break;
-	case 48:
-#line 2777 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_stringval(parser)); }
-	break;
-	case 49:
-#line 2779 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_bool(parser, true)); }
-	break;
-	case 50:
-#line 2781 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_bool(parser, false)); }
-	break;
-	case 51:
-#line 2783 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_null(parser)); }
-	break;
-	case 52:
-#line 2785 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(start_subobject_full(parser)); }
-	break;
-	case 53:
-#line 2786 "upb/json/parser.rl"
-	{ end_subobject_full(parser); }
-	break;
-	case 54:
-#line 2791 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; goto _again;} }
-	break;
-#line 3199 "upb/json/parser.c"
-		}
-	}
-
-_again:
-	if ( cs == 0 )
-		goto _out;
-	if ( ++p != pe )
-		goto _resume;
-	_test_eof: {}
-	if ( p == eof )
-	{
-	const char *__acts = _json_actions + _json_eof_actions[cs];
-	unsigned int __nacts = (unsigned int) *__acts++;
-	while ( __nacts-- > 0 ) {
-		switch ( *__acts++ ) {
-	case 0:
-#line 2600 "upb/json/parser.rl"
-	{ p--; {cs = stack[--top]; 	if ( p == pe )
-		goto _test_eof;
-goto _again;} }
-	break;
-	case 46:
-#line 2774 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_number(parser, p)); }
-	break;
-	case 49:
-#line 2779 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_bool(parser, true)); }
-	break;
-	case 50:
-#line 2781 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_bool(parser, false)); }
-	break;
-	case 51:
-#line 2783 "upb/json/parser.rl"
-	{ CHECK_RETURN_TOP(end_null(parser)); }
-	break;
-	case 53:
-#line 2786 "upb/json/parser.rl"
-	{ end_subobject_full(parser); }
-	break;
-#line 3241 "upb/json/parser.c"
-		}
-	}
-	}
-
-	_out: {}
-	}
-
-#line 2819 "upb/json/parser.rl"
-
-  if (p != pe) {
-    upb_status_seterrf(parser->status, "Parse error at '%.*s'\n", pe - p, p);
-  } else {
-    capture_suspend(parser, &p);
-  }
-
-error:
-  /* Save parsing state back to parser. */
-  parser->current_state = cs;
-  parser->parser_top = top;
-
-  return p - buf;
-}
-
-static bool end(void *closure, const void *hd) {
-  upb_json_parser *parser = closure;
-
-  /* Prevent compile warning on unused static constants. */
-  UPB_UNUSED(json_start);
-  UPB_UNUSED(json_en_duration_machine);
-  UPB_UNUSED(json_en_fieldmask_machine);
-  UPB_UNUSED(json_en_number_machine);
-  UPB_UNUSED(json_en_string_machine);
-  UPB_UNUSED(json_en_timestamp_machine);
-  UPB_UNUSED(json_en_value_machine);
-  UPB_UNUSED(json_en_main);
-
-  parse(parser, hd, &eof_ch, 0, NULL);
-
-  return parser->current_state >= 106;
-}
-
-static void json_parser_reset(upb_json_parser *p) {
-  int cs;
-  int top;
-
-  p->top = p->stack;
-  init_frame(p->top);
-
-  /* Emit Ragel initialization of the parser. */
-  
-#line 3292 "upb/json/parser.c"
-	{
-	cs = json_start;
-	top = 0;
-	}
-
-#line 2861 "upb/json/parser.rl"
-  p->current_state = cs;
-  p->parser_top = top;
-  accumulate_clear(p);
-  p->multipart_state = MULTIPART_INACTIVE;
-  p->capture = NULL;
-  p->accumulated = NULL;
-}
-
-static upb_json_parsermethod *parsermethod_new(upb_json_codecache *c,
-                                               const upb_msgdef *md) {
-  upb_msg_field_iter i;
-  upb_alloc *alloc = upb_arena_alloc(c->arena);
-
-  upb_json_parsermethod *m = upb_malloc(alloc, sizeof(*m));
-
-  m->cache = c;
-
-  upb_byteshandler_init(&m->input_handler_);
-  upb_byteshandler_setstring(&m->input_handler_, parse, m);
-  upb_byteshandler_setendstr(&m->input_handler_, end, m);
-
-  upb_strtable_init2(&m->name_table, UPB_CTYPE_CONSTPTR, alloc);
-
-  /* Build name_table */
-
-  for(upb_msg_field_begin(&i, md);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
-    upb_value v = upb_value_constptr(f);
-    char *buf;
-
-    /* Add an entry for the JSON name. */
-    size_t len = upb_fielddef_getjsonname(f, NULL, 0);
-    buf = upb_malloc(alloc, len);
-    upb_fielddef_getjsonname(f, buf, len);
-    upb_strtable_insert3(&m->name_table, buf, strlen(buf), v, alloc);
-
-    if (strcmp(buf, upb_fielddef_name(f)) != 0) {
-      /* Since the JSON name is different from the regular field name, add an
-       * entry for the raw name (compliant proto3 JSON parsers must accept
-       * both). */
-      const char *name = upb_fielddef_name(f);
-      upb_strtable_insert3(&m->name_table, name, strlen(name), v, alloc);
-    }
-  }
-
-  return m;
-}
-
-/* Public API *****************************************************************/
-
-upb_json_parser *upb_json_parser_create(upb_arena *arena,
-                                        const upb_json_parsermethod *method,
-                                        const upb_symtab* symtab,
-                                        upb_sink output,
-                                        upb_status *status,
-                                        bool ignore_json_unknown) {
-#ifndef NDEBUG
-  const size_t size_before = upb_arena_bytesallocated(arena);
-#endif
-  upb_json_parser *p = upb_arena_malloc(arena, sizeof(upb_json_parser));
-  if (!p) return false;
-
-  p->arena = arena;
-  p->method = method;
-  p->status = status;
-  p->limit = p->stack + UPB_JSON_MAX_DEPTH;
-  p->accumulate_buf = NULL;
-  p->accumulate_buf_size = 0;
-  upb_bytessink_reset(&p->input_, &method->input_handler_, p);
-
-  json_parser_reset(p);
-  p->top->sink = output;
-  p->top->m = upb_handlers_msgdef(output.handlers);
-  if (is_wellknown_msg(p, UPB_WELLKNOWN_ANY)) {
-    p->top->is_any = true;
-    p->top->any_frame = json_parser_any_frame_new(p);
-  } else {
-    p->top->is_any = false;
-    p->top->any_frame = NULL;
-  }
-  set_name_table(p, p->top);
-  p->symtab = symtab;
-
-  p->ignore_json_unknown = ignore_json_unknown;
-
-  /* If this fails, uncomment and increase the value in parser.h. */
-  /* fprintf(stderr, "%zd\n", upb_arena_bytesallocated(arena) - size_before); */
-  UPB_ASSERT_DEBUGVAR(upb_arena_bytesallocated(arena) - size_before <=
-                      UPB_JSON_PARSER_SIZE);
-  return p;
-}
-
-upb_bytessink upb_json_parser_input(upb_json_parser *p) {
-  return p->input_;
-}
-
-const upb_byteshandler *upb_json_parsermethod_inputhandler(
-    const upb_json_parsermethod *m) {
-  return &m->input_handler_;
-}
-
-upb_json_codecache *upb_json_codecache_new(void) {
-  upb_alloc *alloc;
-  upb_json_codecache *c;
-
-  c = upb_gmalloc(sizeof(*c));
-
-  c->arena = upb_arena_new();
-  alloc = upb_arena_alloc(c->arena);
-
-  upb_inttable_init2(&c->methods, UPB_CTYPE_CONSTPTR, alloc);
-
-  return c;
-}
-
-void upb_json_codecache_free(upb_json_codecache *c) {
-  upb_arena_free(c->arena);
-  upb_gfree(c);
-}
-
-const upb_json_parsermethod *upb_json_codecache_get(upb_json_codecache *c,
-                                                    const upb_msgdef *md) {
-  upb_json_parsermethod *m;
-  upb_value v;
-  upb_msg_field_iter i;
-  upb_alloc *alloc = upb_arena_alloc(c->arena);
-
-  if (upb_inttable_lookupptr(&c->methods, md, &v)) {
-    return upb_value_getconstptr(v);
-  }
-
-  m = parsermethod_new(c, md);
-  v = upb_value_constptr(m);
-
-  if (!m) return NULL;
-  if (!upb_inttable_insertptr2(&c->methods, md, v, alloc)) return NULL;
-
-  /* Populate parser methods for all submessages, so the name tables will
-   * be available during parsing. */
-  for(upb_msg_field_begin(&i, md);
-      !upb_msg_field_done(&i);
-      upb_msg_field_next(&i)) {
-    upb_fielddef *f = upb_msg_iter_field(&i);
-
-    if (upb_fielddef_issubmsg(f)) {
-      const upb_msgdef *subdef = upb_fielddef_msgsubdef(f);
-      const upb_json_parsermethod *sub_method =
-          upb_json_codecache_get(c, subdef);
-
-      if (!sub_method) return NULL;
-    }
-  }
-
-  return m;
-}
-/*
-** This currently uses snprintf() to format primitives, and could be optimized
-** further.
-*/
 
 
 #include <ctype.h>
-#include <stdint.h>
+#include <float.h>
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
-#include <time.h>
+#include <setjmp.h>
 
 
-struct upb_json_printer {
-  upb_sink input_;
-  /* BytesSink closure. */
-  void *subc_;
-  upb_bytessink output_;
-
-  /* We track the depth so that we know when to emit startstr/endstr on the
-   * output. */
-  int depth_;
-
-  /* Have we emitted the first element? This state is necessary to emit commas
-   * without leaving a trailing comma in arrays/maps. We keep this state per
-   * frame depth.
-   *
-   * Why max_depth * 2? UPB_MAX_HANDLER_DEPTH counts depth as nested messages.
-   * We count frames (contexts in which we separate elements by commas) as both
-   * repeated fields and messages (maps), and the worst case is a
-   * message->repeated field->submessage->repeated field->... nesting. */
-  bool first_elem_[UPB_MAX_HANDLER_DEPTH * 2];
-
-  /* To print timestamp, printer needs to cache its seconds and nanos values
-   * and convert them when ending timestamp message. See comments of
-   * printer_sethandlers_timestamp for more detail. */
-  int64_t seconds;
-  int32_t nanos;
-};
-
-/* StringPiece; a pointer plus a length. */
-typedef struct {
-  char *ptr;
-  size_t len;
-} strpc;
-
-void freestrpc(void *ptr) {
-  strpc *pc = ptr;
-  upb_gfree(pc->ptr);
-  upb_gfree(pc);
-}
 
 typedef struct {
-  bool preserve_fieldnames;
-} upb_json_printercache;
+  char *buf, *ptr, *end;
+  size_t overflow;
+  int indent_depth;
+  int options;
+  const upb_symtab *ext_pool;
+  jmp_buf err;
+  upb_status *status;
+  upb_arena *arena;
+} jsonenc;
 
-/* Convert fielddef name to JSON name and return as a string piece. */
-strpc *newstrpc(upb_handlers *h, const upb_fielddef *f,
-                bool preserve_fieldnames) {
-  /* TODO(haberman): handle malloc failure. */
-  strpc *ret = upb_gmalloc(sizeof(*ret));
-  if (preserve_fieldnames) {
-    ret->ptr = upb_gstrdup(upb_fielddef_name(f));
-    ret->len = strlen(ret->ptr);
+static void jsonenc_msg(jsonenc *e, const upb_msg *msg, const upb_msgdef *m);
+static void jsonenc_scalar(jsonenc *e, upb_msgval val, const upb_fielddef *f);
+static void jsonenc_msgfield(jsonenc *e, const upb_msg *msg,
+                             const upb_msgdef *m);
+static void jsonenc_msgfields(jsonenc *e, const upb_msg *msg,
+                              const upb_msgdef *m);
+static void jsonenc_value(jsonenc *e, const upb_msg *msg, const upb_msgdef *m);
+
+UPB_NORETURN static void jsonenc_err(jsonenc *e, const char *msg) {
+  upb_status_seterrmsg(e->status, msg);
+  longjmp(e->err, 1);
+}
+
+static upb_arena *jsonenc_arena(jsonenc *e) {
+  /* Create lazily, since it's only needed for Any */
+  if (!e->arena) {
+    e->arena = upb_arena_new();
+  }
+  return e->arena;
+}
+
+static void jsonenc_putbytes(jsonenc *e, const void *data, size_t len) {
+  size_t have = e->end - e->ptr;
+  if (UPB_LIKELY(have >= len)) {
+    memcpy(e->ptr, data, len);
+    e->ptr += len;
   } else {
-    size_t len;
-    ret->len = upb_fielddef_getjsonname(f, NULL, 0);
-    ret->ptr = upb_gmalloc(ret->len);
-    len = upb_fielddef_getjsonname(f, ret->ptr, ret->len);
-    UPB_ASSERT(len == ret->len);
-    ret->len--;  /* NULL */
-  }
-
-  upb_handlers_addcleanup(h, ret, freestrpc);
-  return ret;
-}
-
-/* Convert a null-terminated const char* to a string piece. */
-strpc *newstrpc_str(upb_handlers *h, const char * str) {
-  strpc * ret = upb_gmalloc(sizeof(*ret));
-  ret->ptr = upb_gstrdup(str);
-  ret->len = strlen(str);
-  upb_handlers_addcleanup(h, ret, freestrpc);
-  return ret;
-}
-
-/* ------------ JSON string printing: values, maps, arrays ------------------ */
-
-static void print_data(
-    upb_json_printer *p, const char *buf, unsigned int len) {
-  /* TODO: Will need to change if we support pushback from the sink. */
-  size_t n = upb_bytessink_putbuf(p->output_, p->subc_, buf, len, NULL);
-  UPB_ASSERT(n == len);
-}
-
-static void print_comma(upb_json_printer *p) {
-  if (!p->first_elem_[p->depth_]) {
-    print_data(p, ",", 1);
-  }
-  p->first_elem_[p->depth_] = false;
-}
-
-/* Helpers that print properly formatted elements to the JSON output stream. */
-
-/* Used for escaping control chars in strings. */
-static const char kControlCharLimit = 0x20;
-
-UPB_INLINE bool is_json_escaped(char c) {
-  /* See RFC 4627. */
-  unsigned char uc = (unsigned char)c;
-  return uc < kControlCharLimit || uc == '"' || uc == '\\';
-}
-
-UPB_INLINE const char* json_nice_escape(char c) {
-  switch (c) {
-    case '"':  return "\\\"";
-    case '\\': return "\\\\";
-    case '\b': return "\\b";
-    case '\f': return "\\f";
-    case '\n': return "\\n";
-    case '\r': return "\\r";
-    case '\t': return "\\t";
-    default:   return NULL;
+    memcpy(e->ptr, data, have);
+    e->ptr += have;
+    e->overflow += (len - have);
   }
 }
 
-/* Write a properly escaped string chunk. The surrounding quotes are *not*
- * printed; this is so that the caller has the option of emitting the string
- * content in chunks. */
-static void putstring(upb_json_printer *p, const char *buf, unsigned int len) {
-  const char* unescaped_run = NULL;
-  unsigned int i;
-  for (i = 0; i < len; i++) {
-    char c = buf[i];
-    /* Handle escaping. */
-    if (is_json_escaped(c)) {
-      /* Use a "nice" escape, like \n, if one exists for this character. */
-      const char* escape = json_nice_escape(c);
-      /* If we don't have a specific 'nice' escape code, use a \uXXXX-style
-       * escape. */
-      char escape_buf[8];
-      if (!escape) {
-        unsigned char byte = (unsigned char)c;
-        _upb_snprintf(escape_buf, sizeof(escape_buf), "\\u%04x", (int)byte);
-        escape = escape_buf;
-      }
-
-      /* N.B. that we assume that the input encoding is equal to the output
-       * encoding (both UTF-8 for  now), so for chars >= 0x20 and != \, ", we
-       * can simply pass the bytes through. */
-
-      /* If there's a current run of unescaped chars, print that run first. */
-      if (unescaped_run) {
-        print_data(p, unescaped_run, &buf[i] - unescaped_run);
-        unescaped_run = NULL;
-      }
-      /* Then print the escape code. */
-      print_data(p, escape, strlen(escape));
-    } else {
-      /* Add to the current unescaped run of characters. */
-      if (unescaped_run == NULL) {
-        unescaped_run = &buf[i];
-      }
-    }
-  }
-
-  /* If the string ended in a run of unescaped characters, print that last run. */
-  if (unescaped_run) {
-    print_data(p, unescaped_run, &buf[len] - unescaped_run);
-  }
+static void jsonenc_putstr(jsonenc *e, const char *str) {
+  jsonenc_putbytes(e, str, strlen(str));
 }
 
-#define CHKLENGTH(x) if (!(x)) return -1;
+static void jsonenc_printf(jsonenc *e, const char *fmt, ...) {
+  size_t n;
+  size_t have = e->end - e->ptr;
+  va_list args;
 
-/* Helpers that format floating point values according to our custom formats.
- * Right now we use %.8g and %.17g for float/double, respectively, to match
- * proto2::util::JsonFormat's defaults.  May want to change this later. */
+  va_start(args, fmt);
+  n = _upb_vsnprintf(e->ptr, have, fmt, args);
+  va_end(args);
 
-const char neginf[] = "\"-Infinity\"";
-const char inf[] = "\"Infinity\"";
-
-static size_t fmt_double(double val, char* buf, size_t length) {
-  if (val == UPB_INFINITY) {
-    CHKLENGTH(length >= strlen(inf));
-    strcpy(buf, inf);
-    return strlen(inf);
-  } else if (val == -UPB_INFINITY) {
-    CHKLENGTH(length >= strlen(neginf));
-    strcpy(buf, neginf);
-    return strlen(neginf);
+  if (UPB_LIKELY(have > n)) {
+    e->ptr += n;
   } else {
-    size_t n = _upb_snprintf(buf, length, "%.17g", val);
-    CHKLENGTH(n > 0 && n < length);
-    return n;
+    e->ptr += have;
+    e->overflow += (n - have);
   }
 }
 
-static size_t fmt_float(float val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "%.8g", val);
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
+static void jsonenc_nanos(jsonenc *e, int32_t nanos) {
+  int digits = 9;
 
-static size_t fmt_bool(bool val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "%s", (val ? "true" : "false"));
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
-
-static size_t fmt_int64_as_number(long long val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "%lld", val);
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
-
-static size_t fmt_uint64_as_number(
-    unsigned long long val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "%llu", val);
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
-
-static size_t fmt_int64_as_string(long long val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "\"%lld\"", val);
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
-
-static size_t fmt_uint64_as_string(
-    unsigned long long val, char* buf, size_t length) {
-  size_t n = _upb_snprintf(buf, length, "\"%llu\"", val);
-  CHKLENGTH(n > 0 && n < length);
-  return n;
-}
-
-/* Print a map key given a field name. Called by scalar field handlers and by
- * startseq for repeated fields. */
-static bool putkey(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  const strpc *key = handler_data;
-  print_comma(p);
-  print_data(p, "\"", 1);
-  putstring(p, key->ptr, key->len);
-  print_data(p, "\":", 2);
-  return true;
-}
-
-#define CHKFMT(val) if ((val) == (size_t)-1) return false;
-#define CHK(val)    if (!(val)) return false;
-
-#define TYPE_HANDLERS(type, fmt_func)                                        \
-  static bool put##type(void *closure, const void *handler_data, type val) { \
-    upb_json_printer *p = closure;                                           \
-    char data[64];                                                           \
-    size_t length = fmt_func(val, data, sizeof(data));                       \
-    UPB_UNUSED(handler_data);                                                \
-    CHKFMT(length);                                                          \
-    print_data(p, data, length);                                             \
-    return true;                                                             \
-  }                                                                          \
-  static bool scalar_##type(void *closure, const void *handler_data,         \
-                            type val) {                                      \
-    CHK(putkey(closure, handler_data));                                      \
-    CHK(put##type(closure, handler_data, val));                              \
-    return true;                                                             \
-  }                                                                          \
-  static bool repeated_##type(void *closure, const void *handler_data,       \
-                              type val) {                                    \
-    upb_json_printer *p = closure;                                           \
-    print_comma(p);                                                          \
-    CHK(put##type(closure, handler_data, val));                              \
-    return true;                                                             \
+  if (nanos == 0) return;
+  if (nanos < 0 || nanos >= 1000000000) {
+    jsonenc_err(e, "error formatting timestamp as JSON: invalid nanos");
   }
 
-#define TYPE_HANDLERS_MAPKEY(type, fmt_func)                                 \
-  static bool putmapkey_##type(void *closure, const void *handler_data,      \
-                            type val) {                                      \
-    upb_json_printer *p = closure;                                           \
-    char data[64];                                                           \
-    size_t length = fmt_func(val, data, sizeof(data));                       \
-    UPB_UNUSED(handler_data);                                                \
-    print_data(p, "\"", 1);                                                  \
-    print_data(p, data, length);                                             \
-    print_data(p, "\":", 2);                                                 \
-    return true;                                                             \
+  while (nanos % 1000 == 0) {
+    nanos /= 1000;
+    digits -= 3;
   }
 
-TYPE_HANDLERS(double,   fmt_double)
-TYPE_HANDLERS(float,    fmt_float)
-TYPE_HANDLERS(bool,     fmt_bool)
-TYPE_HANDLERS(int32_t,  fmt_int64_as_number)
-TYPE_HANDLERS(uint32_t, fmt_int64_as_number)
-TYPE_HANDLERS(int64_t,  fmt_int64_as_string)
-TYPE_HANDLERS(uint64_t, fmt_uint64_as_string)
+  jsonenc_printf(e, ".%0.*" PRId32, digits, nanos);
+}
 
-/* double and float are not allowed to be map keys. */
-TYPE_HANDLERS_MAPKEY(bool,     fmt_bool)
-TYPE_HANDLERS_MAPKEY(int32_t,  fmt_int64_as_number)
-TYPE_HANDLERS_MAPKEY(uint32_t, fmt_int64_as_number)
-TYPE_HANDLERS_MAPKEY(int64_t,  fmt_int64_as_number)
-TYPE_HANDLERS_MAPKEY(uint64_t, fmt_uint64_as_number)
+static void jsonenc_timestamp(jsonenc *e, const upb_msg *msg,
+                              const upb_msgdef *m) {
+  const upb_fielddef *seconds_f = upb_msgdef_itof(m, 1);
+  const upb_fielddef *nanos_f = upb_msgdef_itof(m, 2);
+  int64_t seconds = upb_msg_get(msg, seconds_f).int64_val;
+  int32_t nanos = upb_msg_get(msg, nanos_f).int32_val;
+  int L, N, I, J, K, hour, min, sec;
 
-#undef TYPE_HANDLERS
-#undef TYPE_HANDLERS_MAPKEY
+  if (seconds < -62135596800) {
+    jsonenc_err(e,
+                "error formatting timestamp as JSON: minimum acceptable value "
+                "is 0001-01-01T00:00:00Z");
+  } else if (seconds > 253402300799) {
+    jsonenc_err(e,
+                "error formatting timestamp as JSON: maximum acceptable value "
+                "is 9999-12-31T23:59:59Z");
+  }
 
-typedef struct {
-  void *keyname;
-  const upb_enumdef *enumdef;
-} EnumHandlerData;
+  /* Julian Day -> Y/M/D, Algorithm from:
+   * Fliegel, H. F., and Van Flandern, T. C., "A Machine Algorithm for
+   *   Processing Calendar Dates," Communications of the Association of
+   *   Computing Machines, vol. 11 (1968), p. 657.  */
+  L = (seconds / 86400) + 68569 + 2440588;
+  N = 4 * L / 146097;
+  L = L - (146097 * N + 3) / 4;
+  I = 4000 * (L + 1) / 1461001;
+  L = L - 1461 * I / 4 + 31;
+  J = 80 * L / 2447;
+  K = L - 2447 * J / 80;
+  L = J / 11;
+  J = J + 2 - 12 * L;
+  I = 100 * (N - 49) + I + L;
 
-static bool scalar_enum(void *closure, const void *handler_data,
-                        int32_t val) {
-  const EnumHandlerData *hd = handler_data;
-  upb_json_printer *p = closure;
-  const char *symbolic_name;
+  sec = seconds % 60;
+  min = (seconds / 60) % 60;
+  hour = (seconds / 3600) % 24;
 
-  CHK(putkey(closure, hd->keyname));
+  jsonenc_printf(e, "\"%04d-%02d-%02dT%02d:%02d:%02d", I, J, K, hour, min, sec);
+  jsonenc_nanos(e, nanos);
+  jsonenc_putstr(e, "Z\"");
+}
 
-  symbolic_name = upb_enumdef_iton(hd->enumdef, val);
-  if (symbolic_name) {
-    print_data(p, "\"", 1);
-    putstring(p, symbolic_name, strlen(symbolic_name));
-    print_data(p, "\"", 1);
+static void jsonenc_duration(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
+  const upb_fielddef *seconds_f = upb_msgdef_itof(m, 1);
+  const upb_fielddef *nanos_f = upb_msgdef_itof(m, 2);
+  int64_t seconds = upb_msg_get(msg, seconds_f).int64_val;
+  int32_t nanos = upb_msg_get(msg, nanos_f).int32_val;
+
+  if (seconds > 315576000000 || seconds < -315576000000 ||
+      (seconds < 0) != (nanos < 0)) {
+    jsonenc_err(e, "bad duration");
+  }
+
+  if (nanos < 0) {
+    nanos = -nanos;
+  }
+
+  jsonenc_printf(e, "\"%" PRId64, seconds);
+  jsonenc_nanos(e, nanos);
+  jsonenc_putstr(e, "s\"");
+}
+
+static void jsonenc_enum(int32_t val, const upb_fielddef *f, jsonenc *e) {
+  const upb_enumdef *e_def = upb_fielddef_enumsubdef(f);
+  const char *name = upb_enumdef_iton(e_def, val);
+
+  if (name) {
+    jsonenc_printf(e, "\"%s\"", name);
   } else {
-    putint32_t(closure, NULL, val);
-  }
-
-  return true;
-}
-
-static void print_enum_symbolic_name(upb_json_printer *p,
-                                     const upb_enumdef *def,
-                                     int32_t val) {
-  const char *symbolic_name = upb_enumdef_iton(def, val);
-  if (symbolic_name) {
-    print_data(p, "\"", 1);
-    putstring(p, symbolic_name, strlen(symbolic_name));
-    print_data(p, "\"", 1);
-  } else {
-    putint32_t(p, NULL, val);
+    jsonenc_printf(e, "%" PRId32, val);
   }
 }
 
-static bool repeated_enum(void *closure, const void *handler_data,
-                          int32_t val) {
-  const EnumHandlerData *hd = handler_data;
-  upb_json_printer *p = closure;
-  print_comma(p);
-
-  print_enum_symbolic_name(p, hd->enumdef, val);
-
-  return true;
-}
-
-static bool mapvalue_enum(void *closure, const void *handler_data,
-                          int32_t val) {
-  const EnumHandlerData *hd = handler_data;
-  upb_json_printer *p = closure;
-
-  print_enum_symbolic_name(p, hd->enumdef, val);
-
-  return true;
-}
-
-static void *scalar_startsubmsg(void *closure, const void *handler_data) {
-  return putkey(closure, handler_data) ? closure : UPB_BREAK;
-}
-
-static void *repeated_startsubmsg(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_comma(p);
-  return closure;
-}
-
-static void start_frame(upb_json_printer *p) {
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  print_data(p, "{", 1);
-}
-
-static void end_frame(upb_json_printer *p) {
-  print_data(p, "}", 1);
-  p->depth_--;
-}
-
-static bool printer_startmsg(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  if (p->depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc_);
-  }
-  start_frame(p);
-  return true;
-}
-
-static bool printer_endmsg(void *closure, const void *handler_data, upb_status *s) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(s);
-  end_frame(p);
-  if (p->depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-  return true;
-}
-
-static void *startseq(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  CHK(putkey(closure, handler_data));
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  print_data(p, "[", 1);
-  return closure;
-}
-
-static bool endseq(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "]", 1);
-  p->depth_--;
-  return true;
-}
-
-static void *startmap(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  CHK(putkey(closure, handler_data));
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  print_data(p, "{", 1);
-  return closure;
-}
-
-static bool endmap(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "}", 1);
-  p->depth_--;
-  return true;
-}
-
-static size_t putstr(void *closure, const void *handler_data, const char *str,
-                     size_t len, const upb_bufhandle *handle) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(handle);
-  putstring(p, str, len);
-  return len;
-}
-
-/* This has to Base64 encode the bytes, because JSON has no "bytes" type. */
-static size_t putbytes(void *closure, const void *handler_data, const char *str,
-                       size_t len, const upb_bufhandle *handle) {
-  upb_json_printer *p = closure;
-
+static void jsonenc_bytes(jsonenc *e, upb_strview str) {
   /* This is the regular base64, not the "web-safe" version. */
   static const char base64[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const unsigned char *ptr = (unsigned char*)str.data;
+  const unsigned char *end = ptr + str.size;
+  char buf[4];
 
-  /* Base64-encode. */
-  char data[16000];
-  const char *limit = data + sizeof(data);
-  const unsigned char *from = (const unsigned char*)str;
-  char *to = data;
-  size_t remaining = len;
-  size_t bytes;
+  jsonenc_putstr(e, "\"");
 
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(handle);
-
-  print_data(p, "\"", 1);
-
-  while (remaining > 2) {
-    if (limit - to < 4) {
-      bytes = to - data;
-      putstring(p, data, bytes);
-      to = data;
-    }
-
-    to[0] = base64[from[0] >> 2];
-    to[1] = base64[((from[0] & 0x3) << 4) | (from[1] >> 4)];
-    to[2] = base64[((from[1] & 0xf) << 2) | (from[2] >> 6)];
-    to[3] = base64[from[2] & 0x3f];
-
-    remaining -= 3;
-    to += 4;
-    from += 3;
+  while (end - ptr >= 3) {
+    buf[0] = base64[ptr[0] >> 2];
+    buf[1] = base64[((ptr[0] & 0x3) << 4) | (ptr[1] >> 4)];
+    buf[2] = base64[((ptr[1] & 0xf) << 2) | (ptr[2] >> 6)];
+    buf[3] = base64[ptr[2] & 0x3f];
+    jsonenc_putbytes(e, buf, 4);
+    ptr += 3;
   }
 
-  switch (remaining) {
+  switch (end - ptr) {
     case 2:
-      to[0] = base64[from[0] >> 2];
-      to[1] = base64[((from[0] & 0x3) << 4) | (from[1] >> 4)];
-      to[2] = base64[(from[1] & 0xf) << 2];
-      to[3] = '=';
-      to += 4;
-      from += 2;
+      buf[0] = base64[ptr[0] >> 2];
+      buf[1] = base64[((ptr[0] & 0x3) << 4) | (ptr[1] >> 4)];
+      buf[2] = base64[(ptr[1] & 0xf) << 2];
+      buf[3] = '=';
+      jsonenc_putbytes(e, buf, 4);
       break;
     case 1:
-      to[0] = base64[from[0] >> 2];
-      to[1] = base64[((from[0] & 0x3) << 4)];
-      to[2] = '=';
-      to[3] = '=';
-      to += 4;
-      from += 1;
+      buf[0] = base64[ptr[0] >> 2];
+      buf[1] = base64[((ptr[0] & 0x3) << 4)];
+      buf[2] = '=';
+      buf[3] = '=';
+      jsonenc_putbytes(e, buf, 4);
       break;
   }
 
-  bytes = to - data;
-  putstring(p, data, bytes);
-  print_data(p, "\"", 1);
-  return len;
+  jsonenc_putstr(e, "\"");
 }
 
-static void *scalar_startstr(void *closure, const void *handler_data,
-                             size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(size_hint);
-  CHK(putkey(closure, handler_data));
-  print_data(p, "\"", 1);
-  return p;
-}
-
-static size_t scalar_str(void *closure, const void *handler_data,
-                         const char *str, size_t len,
-                         const upb_bufhandle *handle) {
-  CHK(putstr(closure, handler_data, str, len, handle));
-  return len;
-}
-
-static bool scalar_endstr(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "\"", 1);
-  return true;
-}
-
-static void *repeated_startstr(void *closure, const void *handler_data,
-                               size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(size_hint);
-  print_comma(p);
-  print_data(p, "\"", 1);
-  return p;
-}
-
-static size_t repeated_str(void *closure, const void *handler_data,
-                           const char *str, size_t len,
-                           const upb_bufhandle *handle) {
-  CHK(putstr(closure, handler_data, str, len, handle));
-  return len;
-}
-
-static bool repeated_endstr(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "\"", 1);
-  return true;
-}
-
-static void *mapkeyval_startstr(void *closure, const void *handler_data,
-                                size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(size_hint);
-  print_data(p, "\"", 1);
-  return p;
-}
-
-static size_t mapkey_str(void *closure, const void *handler_data,
-                         const char *str, size_t len,
-                         const upb_bufhandle *handle) {
-  CHK(putstr(closure, handler_data, str, len, handle));
-  return len;
-}
-
-static bool mapkey_endstr(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "\":", 2);
-  return true;
-}
-
-static bool mapvalue_endstr(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  print_data(p, "\"", 1);
-  return true;
-}
-
-static size_t scalar_bytes(void *closure, const void *handler_data,
-                           const char *str, size_t len,
-                           const upb_bufhandle *handle) {
-  CHK(putkey(closure, handler_data));
-  CHK(putbytes(closure, handler_data, str, len, handle));
-  return len;
-}
-
-static size_t repeated_bytes(void *closure, const void *handler_data,
-                             const char *str, size_t len,
-                             const upb_bufhandle *handle) {
-  upb_json_printer *p = closure;
-  print_comma(p);
-  CHK(putbytes(closure, handler_data, str, len, handle));
-  return len;
-}
-
-static size_t mapkey_bytes(void *closure, const void *handler_data,
-                           const char *str, size_t len,
-                           const upb_bufhandle *handle) {
-  upb_json_printer *p = closure;
-  CHK(putbytes(closure, handler_data, str, len, handle));
-  print_data(p, ":", 1);
-  return len;
-}
-
-static void set_enum_hd(upb_handlers *h,
-                        const upb_fielddef *f,
-                        bool preserve_fieldnames,
-                        upb_handlerattr *attr) {
-  EnumHandlerData *hd = upb_gmalloc(sizeof(EnumHandlerData));
-  hd->enumdef = upb_fielddef_enumsubdef(f);
-  hd->keyname = newstrpc(h, f, preserve_fieldnames);
-  upb_handlers_addcleanup(h, hd, upb_gfree);
-  attr->handler_data = hd;
-}
-
-/* Set up handlers for a mapentry submessage (i.e., an individual key/value pair
- * in a map).
- *
- * TODO: Handle missing key, missing value, out-of-order key/value, or repeated
- * key or value cases properly. The right way to do this is to allocate a
- * temporary structure at the start of a mapentry submessage, store key and
- * value data in it as key and value handlers are called, and then print the
- * key/value pair once at the end of the submessage. If we don't do this, we
- * should at least detect the case and throw an error. However, so far all of
- * our sources that emit mapentry messages do so canonically (with one key
- * field, and then one value field), so this is not a pressing concern at the
- * moment. */
-void printer_sethandlers_mapentry(const void *closure, bool preserve_fieldnames,
-                                  upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-
-  /* A mapentry message is printed simply as '"key": value'. Rather than
-   * special-case key and value for every type below, we just handle both
-   * fields explicitly here. */
-  const upb_fielddef* key_field = upb_msgdef_itof(md, UPB_MAPENTRY_KEY);
-  const upb_fielddef* value_field = upb_msgdef_itof(md, UPB_MAPENTRY_VALUE);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  UPB_UNUSED(closure);
-
-  switch (upb_fielddef_type(key_field)) {
-    case UPB_TYPE_INT32:
-      upb_handlers_setint32(h, key_field, putmapkey_int32_t, &empty_attr);
-      break;
-    case UPB_TYPE_INT64:
-      upb_handlers_setint64(h, key_field, putmapkey_int64_t, &empty_attr);
-      break;
-    case UPB_TYPE_UINT32:
-      upb_handlers_setuint32(h, key_field, putmapkey_uint32_t, &empty_attr);
-      break;
-    case UPB_TYPE_UINT64:
-      upb_handlers_setuint64(h, key_field, putmapkey_uint64_t, &empty_attr);
-      break;
-    case UPB_TYPE_BOOL:
-      upb_handlers_setbool(h, key_field, putmapkey_bool, &empty_attr);
-      break;
-    case UPB_TYPE_STRING:
-      upb_handlers_setstartstr(h, key_field, mapkeyval_startstr, &empty_attr);
-      upb_handlers_setstring(h, key_field, mapkey_str, &empty_attr);
-      upb_handlers_setendstr(h, key_field, mapkey_endstr, &empty_attr);
-      break;
-    case UPB_TYPE_BYTES:
-      upb_handlers_setstring(h, key_field, mapkey_bytes, &empty_attr);
-      break;
-    default:
-      UPB_ASSERT(false);
-      break;
-  }
-
-  switch (upb_fielddef_type(value_field)) {
-    case UPB_TYPE_INT32:
-      upb_handlers_setint32(h, value_field, putint32_t, &empty_attr);
-      break;
-    case UPB_TYPE_INT64:
-      upb_handlers_setint64(h, value_field, putint64_t, &empty_attr);
-      break;
-    case UPB_TYPE_UINT32:
-      upb_handlers_setuint32(h, value_field, putuint32_t, &empty_attr);
-      break;
-    case UPB_TYPE_UINT64:
-      upb_handlers_setuint64(h, value_field, putuint64_t, &empty_attr);
-      break;
-    case UPB_TYPE_BOOL:
-      upb_handlers_setbool(h, value_field, putbool, &empty_attr);
-      break;
-    case UPB_TYPE_FLOAT:
-      upb_handlers_setfloat(h, value_field, putfloat, &empty_attr);
-      break;
-    case UPB_TYPE_DOUBLE:
-      upb_handlers_setdouble(h, value_field, putdouble, &empty_attr);
-      break;
-    case UPB_TYPE_STRING:
-      upb_handlers_setstartstr(h, value_field, mapkeyval_startstr, &empty_attr);
-      upb_handlers_setstring(h, value_field, putstr, &empty_attr);
-      upb_handlers_setendstr(h, value_field, mapvalue_endstr, &empty_attr);
-      break;
-    case UPB_TYPE_BYTES:
-      upb_handlers_setstring(h, value_field, putbytes, &empty_attr);
-      break;
-    case UPB_TYPE_ENUM: {
-      upb_handlerattr enum_attr = UPB_HANDLERATTR_INIT;
-      set_enum_hd(h, value_field, preserve_fieldnames, &enum_attr);
-      upb_handlers_setint32(h, value_field, mapvalue_enum, &enum_attr);
-      break;
-    }
-    case UPB_TYPE_MESSAGE:
-      /* No handler necessary -- the submsg handlers will print the message
-       * as appropriate. */
-      break;
-  }
-}
-
-static bool putseconds(void *closure, const void *handler_data,
-                       int64_t seconds) {
-  upb_json_printer *p = closure;
-  p->seconds = seconds;
-  UPB_UNUSED(handler_data);
-  return true;
-}
-
-static bool putnanos(void *closure, const void *handler_data,
-                     int32_t nanos) {
-  upb_json_printer *p = closure;
-  p->nanos = nanos;
-  UPB_UNUSED(handler_data);
-  return true;
-}
-
-static void *scalar_startstr_nokey(void *closure, const void *handler_data,
-                                   size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(size_hint);
-  print_data(p, "\"", 1);
-  return p;
-}
-
-static size_t putstr_nokey(void *closure, const void *handler_data,
-                           const char *str, size_t len,
-                           const upb_bufhandle *handle) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(handle);
-  print_data(p, "\"", 1);
-  putstring(p, str, len);
-  print_data(p, "\"", 1);
-  return len + 2;
-}
-
-static void *startseq_nokey(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  print_data(p, "[", 1);
-  return closure;
-}
-
-static void *startseq_fieldmask(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  return closure;
-}
-
-static bool endseq_fieldmask(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  p->depth_--;
-  return true;
-}
-
-static void *repeated_startstr_fieldmask(
-    void *closure, const void *handler_data,
-    size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(size_hint);
-  print_comma(p);
-  return p;
-}
-
-static size_t repeated_str_fieldmask(
-    void *closure, const void *handler_data,
-    const char *str, size_t len,
-    const upb_bufhandle *handle) {
-  const char* limit = str + len;
-  bool upper = false;
-  size_t result_len = 0;
-  for (; str < limit; str++) {
-    if (*str == '_') {
-      upper = true;
-      continue;
-    }
-    if (upper && *str >= 'a' && *str <= 'z') {
-      char upper_char = toupper(*str);
-      CHK(putstr(closure, handler_data, &upper_char, 1, handle));
-    } else {
-      CHK(putstr(closure, handler_data, str, 1, handle));
-    }
-    upper = false;
-    result_len++;
-  }
-  return result_len;
-}
-
-static void *startmap_nokey(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  p->depth_++;
-  p->first_elem_[p->depth_] = true;
-  print_data(p, "{", 1);
-  return closure;
-}
-
-static bool putnull(void *closure, const void *handler_data,
-                    int32_t null) {
-  upb_json_printer *p = closure;
-  print_data(p, "null", 4);
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(null);
-  return true;
-}
-
-static bool printer_startdurationmsg(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  if (p->depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc_);
-  }
-  return true;
-}
-
-#define UPB_DURATION_MAX_JSON_LEN 23
-#define UPB_DURATION_MAX_NANO_LEN 9
-
-static bool printer_enddurationmsg(void *closure, const void *handler_data,
-                                   upb_status *s) {
-  upb_json_printer *p = closure;
-  char buffer[UPB_DURATION_MAX_JSON_LEN];
-  size_t base_len;
-  size_t curr;
-  size_t i;
-
-  memset(buffer, 0, UPB_DURATION_MAX_JSON_LEN);
-
-  if (p->seconds < -315576000000) {
-    upb_status_seterrf(s, "error parsing duration: "
-                          "minimum acceptable value is "
-                          "-315576000000");
-    return false;
-  }
-
-  if (p->seconds > 315576000000) {
-    upb_status_seterrf(s, "error serializing duration: "
-                          "maximum acceptable value is "
-                          "315576000000");
-    return false;
-  }
-
-  _upb_snprintf(buffer, sizeof(buffer), "%ld", (long)p->seconds);
-  base_len = strlen(buffer);
-
-  if (p->nanos != 0) {
-    char nanos_buffer[UPB_DURATION_MAX_NANO_LEN + 3];
-    _upb_snprintf(nanos_buffer, sizeof(nanos_buffer), "%.9f",
-                  p->nanos / 1000000000.0);
-    /* Remove trailing 0. */
-    for (i = UPB_DURATION_MAX_NANO_LEN + 2;
-         nanos_buffer[i] == '0'; i--) {
-      nanos_buffer[i] = 0;
-    }
-    strcpy(buffer + base_len, nanos_buffer + 1);
-  }
-
-  curr = strlen(buffer);
-  strcpy(buffer + curr, "s");
-
-  p->seconds = 0;
-  p->nanos = 0;
-
-  print_data(p, "\"", 1);
-  print_data(p, buffer, strlen(buffer));
-  print_data(p, "\"", 1);
-
-  if (p->depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-
-  UPB_UNUSED(handler_data);
-  return true;
-}
-
-static bool printer_starttimestampmsg(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  if (p->depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc_);
-  }
-  return true;
-}
-
-#define UPB_TIMESTAMP_MAX_JSON_LEN 31
-#define UPB_TIMESTAMP_BEFORE_NANO_LEN 19
-#define UPB_TIMESTAMP_MAX_NANO_LEN 9
-
-static bool printer_endtimestampmsg(void *closure, const void *handler_data,
-                                    upb_status *s) {
-  upb_json_printer *p = closure;
-  char buffer[UPB_TIMESTAMP_MAX_JSON_LEN];
-  time_t time = p->seconds;
-  size_t curr;
-  size_t i;
-  size_t year_length =
-      strftime(buffer, UPB_TIMESTAMP_MAX_JSON_LEN, "%Y", gmtime(&time));
-
-  if (p->seconds < -62135596800) {
-    upb_status_seterrf(s, "error parsing timestamp: "
-                          "minimum acceptable value is "
-                          "0001-01-01T00:00:00Z");
-    return false;
-  }
-
-  if (p->seconds > 253402300799) {
-    upb_status_seterrf(s, "error parsing timestamp: "
-                          "maximum acceptable value is "
-                          "9999-12-31T23:59:59Z");
-    return false;
-  }
-
-  /* strftime doesn't guarantee 4 digits for year. Prepend 0 by ourselves. */
-  for (i = 0; i < 4 - year_length; i++) {
-    buffer[i] = '0';
-  }
-
-  strftime(buffer + (4 - year_length), UPB_TIMESTAMP_MAX_JSON_LEN,
-           "%Y-%m-%dT%H:%M:%S", gmtime(&time));
-  if (p->nanos != 0) {
-    char nanos_buffer[UPB_TIMESTAMP_MAX_NANO_LEN + 3];
-    _upb_snprintf(nanos_buffer, sizeof(nanos_buffer), "%.9f",
-                  p->nanos / 1000000000.0);
-    /* Remove trailing 0. */
-    for (i = UPB_TIMESTAMP_MAX_NANO_LEN + 2;
-         nanos_buffer[i] == '0'; i--) {
-      nanos_buffer[i] = 0;
-    }
-    strcpy(buffer + UPB_TIMESTAMP_BEFORE_NANO_LEN, nanos_buffer + 1);
-  }
-
-  curr = strlen(buffer);
-  strcpy(buffer + curr, "Z");
-
-  p->seconds = 0;
-  p->nanos = 0;
-
-  print_data(p, "\"", 1);
-  print_data(p, buffer, strlen(buffer));
-  print_data(p, "\"", 1);
-
-  if (p->depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(s);
-  return true;
-}
-
-static bool printer_startmsg_noframe(void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  if (p->depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc_);
-  }
-  return true;
-}
-
-static bool printer_endmsg_noframe(
-    void *closure, const void *handler_data, upb_status *s) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(s);
-  if (p->depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-  return true;
-}
-
-static bool printer_startmsg_fieldmask(
-    void *closure, const void *handler_data) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  if (p->depth_ == 0) {
-    upb_bytessink_start(p->output_, 0, &p->subc_);
-  }
-  print_data(p, "\"", 1);
-  return true;
-}
-
-static bool printer_endmsg_fieldmask(
-    void *closure, const void *handler_data, upb_status *s) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(handler_data);
-  UPB_UNUSED(s);
-  print_data(p, "\"", 1);
-  if (p->depth_ == 0) {
-    upb_bytessink_end(p->output_);
-  }
-  return true;
-}
-
-static void *scalar_startstr_onlykey(
-    void *closure, const void *handler_data, size_t size_hint) {
-  upb_json_printer *p = closure;
-  UPB_UNUSED(size_hint);
-  CHK(putkey(closure, handler_data));
-  return p;
-}
-
-/* Set up handlers for an Any submessage. */
-void printer_sethandlers_any(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-
-  const upb_fielddef* type_field = upb_msgdef_itof(md, UPB_ANY_TYPE);
-  const upb_fielddef* value_field = upb_msgdef_itof(md, UPB_ANY_VALUE);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  /* type_url's json name is "@type" */
-  upb_handlerattr type_name_attr = UPB_HANDLERATTR_INIT;
-  upb_handlerattr value_name_attr = UPB_HANDLERATTR_INIT;
-  strpc *type_url_json_name = newstrpc_str(h, "@type");
-  strpc *value_json_name = newstrpc_str(h, "value");
-
-  type_name_attr.handler_data = type_url_json_name;
-  value_name_attr.handler_data = value_json_name;
-
-  /* Set up handlers. */
-  upb_handlers_setstartmsg(h, printer_startmsg, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg, &empty_attr);
-
-  upb_handlers_setstartstr(h, type_field, scalar_startstr, &type_name_attr);
-  upb_handlers_setstring(h, type_field, scalar_str, &empty_attr);
-  upb_handlers_setendstr(h, type_field, scalar_endstr, &empty_attr);
-
-  /* This is not the full and correct JSON encoding for the Any value field. It
-   * requires further processing by the wrapper code based on the type URL.
-   */
-  upb_handlers_setstartstr(h, value_field, scalar_startstr_onlykey,
-                           &value_name_attr);
-
-  UPB_UNUSED(closure);
-}
-
-/* Set up handlers for a fieldmask submessage. */
-void printer_sethandlers_fieldmask(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-  const upb_fielddef* f = upb_msgdef_itof(md, 1);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartseq(h, f, startseq_fieldmask, &empty_attr);
-  upb_handlers_setendseq(h, f, endseq_fieldmask, &empty_attr);
-
-  upb_handlers_setstartmsg(h, printer_startmsg_fieldmask, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg_fieldmask, &empty_attr);
-
-  upb_handlers_setstartstr(h, f, repeated_startstr_fieldmask, &empty_attr);
-  upb_handlers_setstring(h, f, repeated_str_fieldmask, &empty_attr);
-
-  UPB_UNUSED(closure);
-}
-
-/* Set up handlers for a duration submessage. */
-void printer_sethandlers_duration(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-
-  const upb_fielddef* seconds_field =
-      upb_msgdef_itof(md, UPB_DURATION_SECONDS);
-  const upb_fielddef* nanos_field =
-      upb_msgdef_itof(md, UPB_DURATION_NANOS);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartmsg(h, printer_startdurationmsg, &empty_attr);
-  upb_handlers_setint64(h, seconds_field, putseconds, &empty_attr);
-  upb_handlers_setint32(h, nanos_field, putnanos, &empty_attr);
-  upb_handlers_setendmsg(h, printer_enddurationmsg, &empty_attr);
-
-  UPB_UNUSED(closure);
-}
-
-/* Set up handlers for a timestamp submessage. Instead of printing fields
- * separately, the json representation of timestamp follows RFC 3339 */
-void printer_sethandlers_timestamp(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-
-  const upb_fielddef* seconds_field =
-      upb_msgdef_itof(md, UPB_TIMESTAMP_SECONDS);
-  const upb_fielddef* nanos_field =
-      upb_msgdef_itof(md, UPB_TIMESTAMP_NANOS);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartmsg(h, printer_starttimestampmsg, &empty_attr);
-  upb_handlers_setint64(h, seconds_field, putseconds, &empty_attr);
-  upb_handlers_setint32(h, nanos_field, putnanos, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endtimestampmsg, &empty_attr);
-
-  UPB_UNUSED(closure);
-}
-
-void printer_sethandlers_value(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-  upb_msg_field_iter i;
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartmsg(h, printer_startmsg_noframe, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg_noframe, &empty_attr);
-
-  upb_msg_field_begin(&i, md);
-  for(; !upb_msg_field_done(&i); upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
-
-    switch (upb_fielddef_type(f)) {
-      case UPB_TYPE_ENUM:
-        upb_handlers_setint32(h, f, putnull, &empty_attr);
+static void jsonenc_stringbody(jsonenc *e, upb_strview str) {
+  const char *ptr = str.data;
+  const char *end = ptr + str.size;
+
+  while (ptr < end) {
+    switch (*ptr) {
+      case '\n':
+        jsonenc_putstr(e, "\\n");
         break;
-      case UPB_TYPE_DOUBLE:
-        upb_handlers_setdouble(h, f, putdouble, &empty_attr);
+      case '\r':
+        jsonenc_putstr(e, "\\r");
         break;
-      case UPB_TYPE_STRING:
-        upb_handlers_setstartstr(h, f, scalar_startstr_nokey, &empty_attr);
-        upb_handlers_setstring(h, f, scalar_str, &empty_attr);
-        upb_handlers_setendstr(h, f, scalar_endstr, &empty_attr);
+      case '\t':
+        jsonenc_putstr(e, "\\t");
         break;
-      case UPB_TYPE_BOOL:
-        upb_handlers_setbool(h, f, putbool, &empty_attr);
+      case '\"':
+        jsonenc_putstr(e, "\\\"");
         break;
-      case UPB_TYPE_MESSAGE:
+      case '\f':
+        jsonenc_putstr(e, "\\f");
+        break;
+      case '\b':
+        jsonenc_putstr(e, "\\b");
+        break;
+      case '\\':
+        jsonenc_putstr(e, "\\\\");
         break;
       default:
-        UPB_ASSERT(false);
+        if ((uint8_t)*ptr < 0x20) {
+          jsonenc_printf(e, "\\u%04x", (int)(uint8_t)*ptr);
+        } else {
+          /* This could be a non-ASCII byte.  We rely on the string being valid
+           * UTF-8. */
+          jsonenc_putbytes(e, ptr, 1);
+        }
         break;
+    }
+    ptr++;
+  }
+}
+
+static void jsonenc_string(jsonenc *e, upb_strview str) {
+  jsonenc_putstr(e, "\"");
+  jsonenc_stringbody(e, str);
+  jsonenc_putstr(e, "\"");
+}
+
+static void jsonenc_double(jsonenc *e, const char *fmt, double val) {
+  if (val == UPB_INFINITY) {
+    jsonenc_putstr(e, "\"Infinity\"");
+  } else if (val == -UPB_INFINITY) {
+    jsonenc_putstr(e, "\"-Infinity\"");
+  } else if (val != val) {
+    jsonenc_putstr(e, "\"NaN\"");
+  } else {
+    jsonenc_printf(e, fmt, val);
+  }
+}
+
+static void jsonenc_wrapper(jsonenc *e, const upb_msg *msg,
+                            const upb_msgdef *m) {
+  const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
+  upb_msgval val = upb_msg_get(msg, val_f);
+  jsonenc_scalar(e, val, val_f);
+}
+
+static const upb_msgdef *jsonenc_getanymsg(jsonenc *e, upb_strview type_url) {
+  /* Find last '/', if any. */
+  const char *end = type_url.data + type_url.size;
+  const char *ptr = end;
+  const upb_msgdef *ret;
+
+  if (!e->ext_pool || type_url.size == 0) goto badurl;
+
+  while (true) {
+    if (--ptr == type_url.data) {
+      /* Type URL must contain at least one '/', with host before. */
+      goto badurl;
+    }
+    if (*ptr == '/') {
+      ptr++;
+      break;
     }
   }
 
-  UPB_UNUSED(closure);
-}
+  ret = upb_symtab_lookupmsg2(e->ext_pool, ptr, end - ptr);
 
-#define WRAPPER_SETHANDLERS(wrapper, type, putmethod)                      \
-void printer_sethandlers_##wrapper(const void *closure, upb_handlers *h) { \
-  const upb_msgdef *md = upb_handlers_msgdef(h);                           \
-  const upb_fielddef* f = upb_msgdef_itof(md, 1);                          \
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;                \
-  upb_handlers_setstartmsg(h, printer_startmsg_noframe, &empty_attr);      \
-  upb_handlers_setendmsg(h, printer_endmsg_noframe, &empty_attr);          \
-  upb_handlers_set##type(h, f, putmethod, &empty_attr);                    \
-  UPB_UNUSED(closure);                                                     \
-}
-
-WRAPPER_SETHANDLERS(doublevalue, double, putdouble)
-WRAPPER_SETHANDLERS(floatvalue,  float,  putfloat)
-WRAPPER_SETHANDLERS(int64value,  int64,  putint64_t)
-WRAPPER_SETHANDLERS(uint64value, uint64, putuint64_t)
-WRAPPER_SETHANDLERS(int32value,  int32,  putint32_t)
-WRAPPER_SETHANDLERS(uint32value, uint32, putuint32_t)
-WRAPPER_SETHANDLERS(boolvalue,   bool,   putbool)
-WRAPPER_SETHANDLERS(stringvalue, string, putstr_nokey)
-WRAPPER_SETHANDLERS(bytesvalue,  string, putbytes)
-
-#undef WRAPPER_SETHANDLERS
-
-void printer_sethandlers_listvalue(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-  const upb_fielddef* f = upb_msgdef_itof(md, 1);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartseq(h, f, startseq_nokey, &empty_attr);
-  upb_handlers_setendseq(h, f, endseq, &empty_attr);
-
-  upb_handlers_setstartmsg(h, printer_startmsg_noframe, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg_noframe, &empty_attr);
-
-  upb_handlers_setstartsubmsg(h, f, repeated_startsubmsg, &empty_attr);
-
-  UPB_UNUSED(closure);
-}
-
-void printer_sethandlers_structvalue(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-  const upb_fielddef* f = upb_msgdef_itof(md, 1);
-
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-
-  upb_handlers_setstartseq(h, f, startmap_nokey, &empty_attr);
-  upb_handlers_setendseq(h, f, endmap, &empty_attr);
-
-  upb_handlers_setstartmsg(h, printer_startmsg_noframe, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg_noframe, &empty_attr);
-
-  upb_handlers_setstartsubmsg(h, f, repeated_startsubmsg, &empty_attr);
-
-  UPB_UNUSED(closure);
-}
-
-void printer_sethandlers(const void *closure, upb_handlers *h) {
-  const upb_msgdef *md = upb_handlers_msgdef(h);
-  bool is_mapentry = upb_msgdef_mapentry(md);
-  upb_handlerattr empty_attr = UPB_HANDLERATTR_INIT;
-  upb_msg_field_iter i;
-  const upb_json_printercache *cache = closure;
-  const bool preserve_fieldnames = cache->preserve_fieldnames;
-
-  if (is_mapentry) {
-    /* mapentry messages are sufficiently different that we handle them
-     * separately. */
-    printer_sethandlers_mapentry(closure, preserve_fieldnames, h);
-    return;
+  if (!ret) {
+    jsonenc_err(e, "Couldn't find Any type");
   }
 
-  switch (upb_msgdef_wellknowntype(md)) {
+  return ret;
+
+badurl:
+  jsonenc_err(e, "Bad type URL");
+}
+
+static void jsonenc_any(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
+  const upb_fielddef *type_url_f = upb_msgdef_itof(m, 1);
+  const upb_fielddef *value_f = upb_msgdef_itof(m, 2);
+  upb_strview type_url = upb_msg_get(msg, type_url_f).str_val;
+  upb_strview value = upb_msg_get(msg, value_f).str_val;
+  const upb_msgdef *any_m = jsonenc_getanymsg(e, type_url);
+  const upb_msglayout *any_layout = upb_msgdef_layout(any_m);
+  upb_arena *arena = jsonenc_arena(e);
+  upb_msg *any = upb_msg_new(any_m, arena);
+
+  if (!upb_decode(value.data, value.size, any, any_layout, arena)) {
+    jsonenc_err(e, "Error decoding message in Any");
+  }
+
+  jsonenc_putstr(e, "{\"@type\": ");
+  jsonenc_string(e, type_url);
+  jsonenc_putstr(e, ", ");
+
+  if (upb_msgdef_wellknowntype(any_m) == UPB_WELLKNOWN_UNSPECIFIED) {
+    /* Regular messages: {"@type": "...", "foo": 1, "bar": 2} */
+    jsonenc_msgfields(e, any, any_m);
+  } else {
+    /* Well-known type: {"@type": "...", "value": <well-known encoding>} */
+    jsonenc_putstr(e, "value: ");
+    jsonenc_msgfield(e, any, any_m);
+  }
+
+  jsonenc_putstr(e, "}");
+}
+
+static void jsonenc_putsep(jsonenc *e, const char *str, bool *first) {
+  if (*first) {
+    *first = false;
+  } else {
+    jsonenc_putstr(e, str);
+  }
+}
+
+static void jsonenc_fieldpath(jsonenc *e, upb_strview path) {
+  const char *ptr = path.data;
+  const char *end = ptr + path.size;
+
+  while (ptr < end) {
+    char ch = *ptr;
+
+    if (ch >= 'A' && ch <= 'Z') {
+      jsonenc_err(e, "Field mask element may not have upper-case letter.");
+    } else if (ch == '_') {
+      if (ptr == end - 1 || *(ptr + 1) < 'a' || *(ptr + 1) > 'z') {
+        jsonenc_err(e, "Underscore must be followed by a lowercase letter.");
+      }
+      ch = *++ptr - 32;
+    }
+
+    jsonenc_putbytes(e, &ch, 1);
+    ptr++;
+  }
+}
+
+static void jsonenc_fieldmask(jsonenc *e, const upb_msg *msg,
+                              const upb_msgdef *m) {
+  const upb_fielddef *paths_f = upb_msgdef_itof(m, 1);
+  const upb_array *paths = upb_msg_get(msg, paths_f).array_val;
+  bool first = true;
+  size_t i, n = 0;
+
+  if (paths) n = upb_array_size(paths);
+
+  jsonenc_putstr(e, "\"");
+
+  for (i = 0; i < n; i++) {
+    jsonenc_putsep(e, ",", &first);
+    jsonenc_fieldpath(e, upb_array_get(paths, i).str_val);
+  }
+
+  jsonenc_putstr(e, "\"");
+}
+
+static void jsonenc_struct(jsonenc *e, const upb_msg *msg,
+                           const upb_msgdef *m) {
+  const upb_fielddef *fields_f = upb_msgdef_itof(m, 1);
+  const upb_map *fields = upb_msg_get(msg, fields_f).map_val;
+  const upb_msgdef *entry_m = upb_fielddef_msgsubdef(fields_f);
+  const upb_fielddef *value_f = upb_msgdef_itof(entry_m, 2);
+  size_t iter = UPB_MAP_BEGIN;
+  bool first = true;
+
+  jsonenc_putstr(e, "{");
+
+  while (upb_mapiter_next(fields, &iter)) {
+    upb_msgval key = upb_mapiter_key(fields, iter);
+    upb_msgval val = upb_mapiter_value(fields, iter);
+
+    jsonenc_putsep(e, ", ", &first);
+    jsonenc_string(e, key.str_val);
+    jsonenc_putstr(e, ": ");
+    jsonenc_value(e, val.msg_val, upb_fielddef_msgsubdef(value_f));
+  }
+
+  jsonenc_putstr(e, "}");
+}
+
+static void jsonenc_listvalue(jsonenc *e, const upb_msg *msg,
+                              const upb_msgdef *m) {
+  const upb_fielddef *values_f = upb_msgdef_itof(m, 1);
+  const upb_msgdef *values_m = upb_fielddef_msgsubdef(values_f);
+  const upb_array *values = upb_msg_get(msg, values_f).array_val;
+  const size_t size = upb_array_size(values);
+  size_t i;
+  bool first = true;
+
+  jsonenc_putstr(e, "[");
+
+  for (i = 0; i < size; i++) {
+    upb_msgval elem = upb_array_get(values, i);
+
+    jsonenc_putsep(e, ", ", &first);
+    jsonenc_value(e, elem.msg_val, values_m);
+  }
+
+  jsonenc_putstr(e, "]");
+}
+
+static void jsonenc_value(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
+  /* TODO(haberman): do we want a reflection method to get oneof case? */
+  size_t iter = UPB_MSG_BEGIN;
+  const upb_fielddef *f;
+  upb_msgval val;
+
+  if (!upb_msg_next(msg, m, NULL,  &f, &val, &iter)) {
+    jsonenc_err(e, "No value set in Value proto");
+  }
+
+  switch (upb_fielddef_number(f)) {
+    case 1:
+      jsonenc_putstr(e, "null");
+      break;
+    case 2:
+      jsonenc_double(e, "%.17g", val.double_val);
+      break;
+    case 3:
+      jsonenc_string(e, val.str_val);
+      break;
+    case 4:
+      jsonenc_putstr(e, val.bool_val ? "true" : "false");
+      break;
+    case 5:
+      jsonenc_struct(e, val.msg_val, upb_fielddef_msgsubdef(f));
+      break;
+    case 6:
+      jsonenc_listvalue(e, val.msg_val, upb_fielddef_msgsubdef(f));
+      break;
+  }
+}
+
+static void jsonenc_msgfield(jsonenc *e, const upb_msg *msg,
+                             const upb_msgdef *m) {
+  switch (upb_msgdef_wellknowntype(m)) {
     case UPB_WELLKNOWN_UNSPECIFIED:
+      jsonenc_msg(e, msg, m);
       break;
     case UPB_WELLKNOWN_ANY:
-      printer_sethandlers_any(closure, h);
-      return;
+      jsonenc_any(e, msg, m);
+      break;
     case UPB_WELLKNOWN_FIELDMASK:
-      printer_sethandlers_fieldmask(closure, h);
-      return;
+      jsonenc_fieldmask(e, msg, m);
+      break;
     case UPB_WELLKNOWN_DURATION:
-      printer_sethandlers_duration(closure, h);
-      return;
+      jsonenc_duration(e, msg, m);
+      break;
     case UPB_WELLKNOWN_TIMESTAMP:
-      printer_sethandlers_timestamp(closure, h);
-      return;
+      jsonenc_timestamp(e, msg, m);
+      break;
+    case UPB_WELLKNOWN_DOUBLEVALUE:
+    case UPB_WELLKNOWN_FLOATVALUE:
+    case UPB_WELLKNOWN_INT64VALUE:
+    case UPB_WELLKNOWN_UINT64VALUE:
+    case UPB_WELLKNOWN_INT32VALUE:
+    case UPB_WELLKNOWN_UINT32VALUE:
+    case UPB_WELLKNOWN_STRINGVALUE:
+    case UPB_WELLKNOWN_BYTESVALUE:
+    case UPB_WELLKNOWN_BOOLVALUE:
+      jsonenc_wrapper(e, msg, m);
+      break;
     case UPB_WELLKNOWN_VALUE:
-      printer_sethandlers_value(closure, h);
-      return;
+      jsonenc_value(e, msg, m);
+      break;
     case UPB_WELLKNOWN_LISTVALUE:
-      printer_sethandlers_listvalue(closure, h);
-      return;
+      jsonenc_listvalue(e, msg, m);
+      break;
     case UPB_WELLKNOWN_STRUCT:
-      printer_sethandlers_structvalue(closure, h);
-      return;
-#define WRAPPER(wellknowntype, name)        \
-  case wellknowntype:                       \
-    printer_sethandlers_##name(closure, h); \
-    return;                                 \
+      jsonenc_struct(e, msg, m);
+      break;
+  }
+}
 
-    WRAPPER(UPB_WELLKNOWN_DOUBLEVALUE, doublevalue);
-    WRAPPER(UPB_WELLKNOWN_FLOATVALUE, floatvalue);
-    WRAPPER(UPB_WELLKNOWN_INT64VALUE, int64value);
-    WRAPPER(UPB_WELLKNOWN_UINT64VALUE, uint64value);
-    WRAPPER(UPB_WELLKNOWN_INT32VALUE, int32value);
-    WRAPPER(UPB_WELLKNOWN_UINT32VALUE, uint32value);
-    WRAPPER(UPB_WELLKNOWN_BOOLVALUE, boolvalue);
-    WRAPPER(UPB_WELLKNOWN_STRINGVALUE, stringvalue);
-    WRAPPER(UPB_WELLKNOWN_BYTESVALUE, bytesvalue);
+static void jsonenc_scalar(jsonenc *e, upb_msgval val, const upb_fielddef *f) {
+  switch (upb_fielddef_type(f)) {
+    case UPB_TYPE_BOOL:
+      jsonenc_putstr(e, val.bool_val ? "true" : "false");
+      break;
+    case UPB_TYPE_FLOAT:
+      jsonenc_double(e, "%.9g", val.float_val);
+      break;
+    case UPB_TYPE_DOUBLE:
+      jsonenc_double(e, "%.17g", val.double_val);
+      break;
+    case UPB_TYPE_INT32:
+      jsonenc_printf(e, "%" PRId32, val.int32_val);
+      break;
+    case UPB_TYPE_UINT32:
+      jsonenc_printf(e, "%" PRIu32, val.uint32_val);
+      break;
+    case UPB_TYPE_INT64:
+      jsonenc_printf(e, "\"%" PRId64 "\"", val.int64_val);
+      break;
+    case UPB_TYPE_UINT64:
+      jsonenc_printf(e, "\"%" PRIu64 "\"", val.uint64_val);
+      break;
+    case UPB_TYPE_STRING:
+      jsonenc_string(e, val.str_val);
+      break;
+    case UPB_TYPE_BYTES:
+      jsonenc_bytes(e, val.str_val);
+      break;
+    case UPB_TYPE_ENUM:
+      jsonenc_enum(val.int32_val, f, e);
+      break;
+    case UPB_TYPE_MESSAGE:
+      jsonenc_msgfield(e, val.msg_val, upb_fielddef_msgsubdef(f));
+      break;
+  }
+}
 
-#undef WRAPPER
+static void jsonenc_mapkey(jsonenc *e, upb_msgval val, const upb_fielddef *f) {
+  jsonenc_putstr(e, "\"");
+
+  switch (upb_fielddef_type(f)) {
+    case UPB_TYPE_BOOL:
+      jsonenc_putstr(e, val.bool_val ? "true" : "false");
+      break;
+    case UPB_TYPE_INT32:
+      jsonenc_printf(e, "%" PRId32, val.int32_val);
+      break;
+    case UPB_TYPE_UINT32:
+      jsonenc_printf(e, "%" PRIu32, val.uint32_val);
+      break;
+    case UPB_TYPE_INT64:
+      jsonenc_printf(e, "%" PRId64, val.int64_val);
+      break;
+    case UPB_TYPE_UINT64:
+      jsonenc_printf(e, "%" PRIu64, val.uint64_val);
+      break;
+    case UPB_TYPE_STRING:
+      jsonenc_stringbody(e, val.str_val);
+      break;
+    default:
+      UPB_UNREACHABLE();
   }
 
-  upb_handlers_setstartmsg(h, printer_startmsg, &empty_attr);
-  upb_handlers_setendmsg(h, printer_endmsg, &empty_attr);
+  jsonenc_putstr(e, "\": ");
+}
 
-#define TYPE(type, name, ctype)                                               \
-  case type:                                                                  \
-    if (upb_fielddef_isseq(f)) {                                              \
-      upb_handlers_set##name(h, f, repeated_##ctype, &empty_attr);            \
-    } else {                                                                  \
-      upb_handlers_set##name(h, f, scalar_##ctype, &name_attr);               \
-    }                                                                         \
-    break;
+static void jsonenc_array(jsonenc *e, const upb_array *arr,
+                         const upb_fielddef *f) {
+  size_t i;
+  size_t size = upb_array_size(arr);
+  bool first = true;
 
-  upb_msg_field_begin(&i, md);
-  for(; !upb_msg_field_done(&i); upb_msg_field_next(&i)) {
-    const upb_fielddef *f = upb_msg_iter_field(&i);
+  jsonenc_putstr(e, "[");
 
-    upb_handlerattr name_attr = UPB_HANDLERATTR_INIT;
-    name_attr.handler_data = newstrpc(h, f, preserve_fieldnames);
-
-    if (upb_fielddef_ismap(f)) {
-      upb_handlers_setstartseq(h, f, startmap, &name_attr);
-      upb_handlers_setendseq(h, f, endmap, &name_attr);
-    } else if (upb_fielddef_isseq(f)) {
-      upb_handlers_setstartseq(h, f, startseq, &name_attr);
-      upb_handlers_setendseq(h, f, endseq, &empty_attr);
-    }
-
-    switch (upb_fielddef_type(f)) {
-      TYPE(UPB_TYPE_FLOAT,  float,  float);
-      TYPE(UPB_TYPE_DOUBLE, double, double);
-      TYPE(UPB_TYPE_BOOL,   bool,   bool);
-      TYPE(UPB_TYPE_INT32,  int32,  int32_t);
-      TYPE(UPB_TYPE_UINT32, uint32, uint32_t);
-      TYPE(UPB_TYPE_INT64,  int64,  int64_t);
-      TYPE(UPB_TYPE_UINT64, uint64, uint64_t);
-      case UPB_TYPE_ENUM: {
-        /* For now, we always emit symbolic names for enums. We may want an
-         * option later to control this behavior, but we will wait for a real
-         * need first. */
-        upb_handlerattr enum_attr = UPB_HANDLERATTR_INIT;
-        set_enum_hd(h, f, preserve_fieldnames, &enum_attr);
-
-        if (upb_fielddef_isseq(f)) {
-          upb_handlers_setint32(h, f, repeated_enum, &enum_attr);
-        } else {
-          upb_handlers_setint32(h, f, scalar_enum, &enum_attr);
-        }
-
-        break;
-      }
-      case UPB_TYPE_STRING:
-        if (upb_fielddef_isseq(f)) {
-          upb_handlers_setstartstr(h, f, repeated_startstr, &empty_attr);
-          upb_handlers_setstring(h, f, repeated_str, &empty_attr);
-          upb_handlers_setendstr(h, f, repeated_endstr, &empty_attr);
-        } else {
-          upb_handlers_setstartstr(h, f, scalar_startstr, &name_attr);
-          upb_handlers_setstring(h, f, scalar_str, &empty_attr);
-          upb_handlers_setendstr(h, f, scalar_endstr, &empty_attr);
-        }
-        break;
-      case UPB_TYPE_BYTES:
-        /* XXX: this doesn't support strings that span buffers yet. The base64
-         * encoder will need to be made resumable for this to work properly. */
-        if (upb_fielddef_isseq(f)) {
-          upb_handlers_setstring(h, f, repeated_bytes, &empty_attr);
-        } else {
-          upb_handlers_setstring(h, f, scalar_bytes, &name_attr);
-        }
-        break;
-      case UPB_TYPE_MESSAGE:
-        if (upb_fielddef_isseq(f)) {
-          upb_handlers_setstartsubmsg(h, f, repeated_startsubmsg, &name_attr);
-        } else {
-          upb_handlers_setstartsubmsg(h, f, scalar_startsubmsg, &name_attr);
-        }
-        break;
-    }
+  for (i = 0; i < size; i++) {
+    jsonenc_putsep(e, ", ", &first);
+    jsonenc_scalar(e, upb_array_get(arr, i), f);
   }
 
-#undef TYPE
+  jsonenc_putstr(e, "]");
 }
 
-static void json_printer_reset(upb_json_printer *p) {
-  p->depth_ = 0;
+static void jsonenc_map(jsonenc *e, const upb_map *map, const upb_fielddef *f) {
+  const upb_msgdef *entry = upb_fielddef_msgsubdef(f);
+  const upb_fielddef *key_f = upb_msgdef_itof(entry, 1);
+  const upb_fielddef *val_f = upb_msgdef_itof(entry, 2);
+  size_t iter = UPB_MAP_BEGIN;
+  bool first = true;
+
+  jsonenc_putstr(e, "{");
+
+  while (upb_mapiter_next(map, &iter)) {
+    jsonenc_putsep(e, ", ", &first);
+    jsonenc_mapkey(e, upb_mapiter_key(map, iter), key_f);
+    jsonenc_scalar(e, upb_mapiter_value(map, iter), val_f);
+  }
+
+  jsonenc_putstr(e, "}");
 }
 
+static void jsonenc_fieldval(jsonenc *e, const upb_fielddef *f,
+                             upb_msgval val, bool *first) {
+  const char *name;
 
-/* Public API *****************************************************************/
+  if (e->options & UPB_JSONENC_PROTONAMES) {
+    name = upb_fielddef_name(f);
+  } else {
+    name = upb_fielddef_jsonname(f);
+  }
 
-upb_json_printer *upb_json_printer_create(upb_arena *a, const upb_handlers *h,
-                                          upb_bytessink output) {
-#ifndef NDEBUG
-  size_t size_before = upb_arena_bytesallocated(a);
-#endif
+  jsonenc_putsep(e, ", ", first);
+  jsonenc_printf(e, "\"%s\": ", name);
 
-  upb_json_printer *p = upb_arena_malloc(a, sizeof(upb_json_printer));
-  if (!p) return NULL;
-
-  p->output_ = output;
-  json_printer_reset(p);
-  upb_sink_reset(&p->input_, h, p);
-  p->seconds = 0;
-  p->nanos = 0;
-
-  /* If this fails, increase the value in printer.h. */
-  UPB_ASSERT_DEBUGVAR(upb_arena_bytesallocated(a) - size_before <=
-                      UPB_JSON_PRINTER_SIZE);
-  return p;
+  if (upb_fielddef_ismap(f)) {
+    jsonenc_map(e, val.map_val, f);
+  } else if (upb_fielddef_isseq(f)) {
+    jsonenc_array(e, val.array_val, f);
+  } else {
+    jsonenc_scalar(e, val, f);
+  }
 }
 
-upb_sink upb_json_printer_input(upb_json_printer *p) {
-  return p->input_;
+static void jsonenc_msgfields(jsonenc *e, const upb_msg *msg,
+                              const upb_msgdef *m) {
+  upb_msgval val;
+  const upb_fielddef *f;
+  bool first = true;
+
+  if (e->options & UPB_JSONENC_EMITDEFAULTS) {
+    /* Iterate over all fields. */
+    upb_msg_field_iter i;
+    for (upb_msg_field_begin(&i, m); !upb_msg_field_done(&i);
+         upb_msg_field_next(&i)) {
+      f = upb_msg_iter_field(&i);
+      jsonenc_fieldval(e, f, upb_msg_get(msg, f), &first);
+    }
+  } else {
+    /* Iterate over non-empty fields. */
+    size_t iter = UPB_MSG_BEGIN;
+    while (upb_msg_next(msg, m, e->ext_pool, &f, &val, &iter)) {
+      jsonenc_fieldval(e, f, val, &first);
+    }
+  }
 }
 
-upb_handlercache *upb_json_printer_newcache(bool preserve_proto_fieldnames) {
-  upb_json_printercache *cache = upb_gmalloc(sizeof(*cache));
-  upb_handlercache *ret = upb_handlercache_new(printer_sethandlers, cache);
+static void jsonenc_msg(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
+  jsonenc_putstr(e, "{");
+  jsonenc_msgfields(e, msg, m);
+  jsonenc_putstr(e, "}");
+}
 
-  cache->preserve_fieldnames = preserve_proto_fieldnames;
-  upb_handlercache_addcleanup(ret, cache, upb_gfree);
+static size_t jsonenc_nullz(jsonenc *e, size_t size) {
+  size_t ret = e->ptr - e->buf + e->overflow;
+
+  if (size > 0) {
+    if (e->ptr == e->end) e->ptr--;
+    *e->ptr = '\0';
+  }
 
   return ret;
 }
+
+size_t upb_json_encode(const upb_msg *msg, const upb_msgdef *m,
+                       const upb_symtab *ext_pool, int options, char *buf,
+                       size_t size, upb_status *status) {
+  jsonenc e;
+
+  e.buf = buf;
+  e.ptr = buf;
+  e.end = buf + size;
+  e.overflow = 0;
+  e.options = options;
+  e.ext_pool = ext_pool;
+  e.status = status;
+  e.arena = NULL;
+
+  if (setjmp(e.err)) return -1;
+
+  jsonenc_msg(&e, msg, m);
+  if (e.arena) upb_arena_free(e.arena);
+  return jsonenc_nullz(&e, size);
+}
 /* See port_def.inc.  This should #undef all macros #defined there. */
 
+#undef UPB_MAPTYPE_STRING
 #undef UPB_SIZE
 #undef UPB_FIELD_AT
 #undef UPB_READ_ONEOF
@@ -13279,6 +7542,7 @@ upb_handlercache *upb_json_printer_newcache(bool preserve_proto_fieldnames) {
 #undef UPB_MAX
 #undef UPB_MIN
 #undef UPB_UNUSED
+#undef UPB_ASSUME
 #undef UPB_ASSERT
 #undef UPB_ASSERT_DEBUGVAR
 #undef UPB_UNREACHABLE

@@ -28,6 +28,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include "arena.h"
 #include "protobuf.h"
 
 #include <zend_hash.h>
@@ -513,6 +514,7 @@ static PHP_MINIT_FUNCTION(protobuf) {
 
   any_init(TSRMLS_C);
   api_init(TSRMLS_C);
+  arena_init(TSRMLS_C);
   bool_value_init(TSRMLS_C);
   bytes_value_init(TSRMLS_C);
   double_value_init(TSRMLS_C);

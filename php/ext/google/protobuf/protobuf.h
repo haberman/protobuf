@@ -73,12 +73,6 @@
 
 // PHP String
 
-#define PHP_PROTO_ZVAL_STRING(zval_ptr, s, copy) \
-  ZVAL_STRING(zval_ptr, s)
-#define PHP_PROTO_ZVAL_STRINGL(zval_ptr, s, len, copy) \
-  ZVAL_STRINGL(zval_ptr, s, len)
-#define PHP_PROTO_RETURN_STRING(s, copy) RETURN_STRING(s)
-#define PHP_PROTO_RETURN_STRINGL(s, len, copy) RETURN_STRINGL(s, len)
 #define PHP_PROTO_RETVAL_STRINGL(s, len, copy) RETVAL_STRINGL(s, len)
 #define php_proto_zend_make_printable_zval(from, to) \
   zend_make_printable_zval(from, to)

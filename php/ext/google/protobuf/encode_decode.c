@@ -550,7 +550,7 @@ static void map_slot_init(
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
       *(zval**)memory = cache;
-      PHP_PROTO_ZVAL_STRINGL(*(zval**)memory, "", 0, 1);
+      ZVAL_STRINGL(*(zval**)memory, "", 0);
       break;
     }
     case UPB_TYPE_MESSAGE: {

@@ -671,7 +671,7 @@ PHP_METHOD(Message, whichOneof) {
       upb_msgdef_ntoo(msg->descriptor->msgdef, oneof_name, length);
   const char* oneof_case_name = layout_get_oneof_case(
       msg->descriptor->layout, message_data(msg), oneof TSRMLS_CC);
-  PHP_PROTO_RETURN_STRING(oneof_case_name, 1);
+  RETURN_STRING(oneof_case_name);
 }
 
 // -----------------------------------------------------------------------------
@@ -682,7 +682,7 @@ PHP_METHOD(Message, whichOneof) {
                                   LOWER_FIELD)                                 \
   PHP_METHOD(UPPER_CLASS, get##UPPER_FIELD) {                                  \
     zval member;                                                               \
-    PHP_PROTO_ZVAL_STRING(&member, LOWER_FIELD, 1);                            \
+    ZVAL_STRING(&member, LOWER_FIELD);                                         \
     PHP_PROTO_FAKE_SCOPE_BEGIN(LOWER_CLASS##_type);                            \
     zval* value = message_get_property_internal(getThis(), &member TSRMLS_CC); \
     PHP_PROTO_FAKE_SCOPE_END;                                                  \
@@ -696,7 +696,7 @@ PHP_METHOD(Message, whichOneof) {
       return;                                                                  \
     }                                                                          \
     zval member;                                                               \
-    PHP_PROTO_ZVAL_STRING(&member, LOWER_FIELD, 1);                            \
+    ZVAL_STRING(&member, LOWER_FIELD);                                         \
     message_set_property_internal(getThis(), &member, value TSRMLS_CC);        \
     zval_dtor(&member);                                                        \
     PHP_PROTO_RETVAL_ZVAL(getThis());                                          \
@@ -706,7 +706,7 @@ PHP_METHOD(Message, whichOneof) {
                                         LOWER_FIELD)                           \
   PHP_METHOD(UPPER_CLASS, get##UPPER_FIELD) {                                  \
     zval member;                                                               \
-    PHP_PROTO_ZVAL_STRING(&member, LOWER_FIELD, 1);                            \
+    ZVAL_STRING(&member, LOWER_FIELD);                                         \
     PHP_PROTO_FAKE_SCOPE_BEGIN(LOWER_CLASS##_type);                            \
     message_get_oneof_property_internal(getThis(), &member,                    \
                                         return_value TSRMLS_CC);               \
@@ -720,7 +720,7 @@ PHP_METHOD(Message, whichOneof) {
       return;                                                                  \
     }                                                                          \
     zval member;                                                               \
-    PHP_PROTO_ZVAL_STRING(&member, LOWER_FIELD, 1);                            \
+    ZVAL_STRING(&member, LOWER_FIELD);                                         \
     message_set_property_internal(getThis(), &member, value TSRMLS_CC);        \
     zval_dtor(&member);                                                        \
     PHP_PROTO_RETVAL_ZVAL(getThis());                                          \
@@ -736,7 +736,7 @@ PHP_METHOD(Message, whichOneof) {
     const char* oneof_case_name = layout_get_oneof_case(                 \
         msg->descriptor->layout, message_data(msg), oneof TSRMLS_CC);    \
     PHP_PROTO_FAKE_SCOPE_END;                                            \
-    PHP_PROTO_RETURN_STRING(oneof_case_name, 1);                         \
+    RETURN_STRING(oneof_case_name);                                      \
   }
 
 // Forward declare file init functions
@@ -1093,13 +1093,13 @@ PHP_METHOD(Field_Cardinality, name) {
   }
   switch (value) {
     case 0:
-      PHP_PROTO_RETURN_STRING("CARDINALITY_UNKNOWN", 1);
+      RETURN_STRING("CARDINALITY_UNKNOWN");
     case 1:
-      PHP_PROTO_RETURN_STRING("CARDINALITY_OPTIONAL", 1);
+      RETURN_STRING("CARDINALITY_OPTIONAL");
     case 2:
-      PHP_PROTO_RETURN_STRING("CARDINALITY_REQUIRED", 1);
+      RETURN_STRING("CARDINALITY_REQUIRED");
     case 3:
-      PHP_PROTO_RETURN_STRING("CARDINALITY_REPEATED", 1);
+      RETURN_STRING("CARDINALITY_REPEATED");
     default:
       zend_throw_exception_ex(
           NULL, 0 TSRMLS_CC,
@@ -1199,43 +1199,43 @@ PHP_METHOD(Field_Kind, name) {
   }
   switch (value) {
     case 0:
-      PHP_PROTO_RETURN_STRING("TYPE_UNKNOWN", 1);
+      RETURN_STRING("TYPE_UNKNOWN");
     case 1:
-      PHP_PROTO_RETURN_STRING("TYPE_DOUBLE", 1);
+      RETURN_STRING("TYPE_DOUBLE");
     case 2:
-      PHP_PROTO_RETURN_STRING("TYPE_FLOAT", 1);
+      RETURN_STRING("TYPE_FLOAT");
     case 3:
-      PHP_PROTO_RETURN_STRING("TYPE_INT64", 1);
+      RETURN_STRING("TYPE_INT64");
     case 4:
-      PHP_PROTO_RETURN_STRING("TYPE_UINT64", 1);
+      RETURN_STRING("TYPE_UINT64");
     case 5:
-      PHP_PROTO_RETURN_STRING("TYPE_INT32", 1);
+      RETURN_STRING("TYPE_INT32");
     case 6:
-      PHP_PROTO_RETURN_STRING("TYPE_FIXED64", 1);
+      RETURN_STRING("TYPE_FIXED64");
     case 7:
-      PHP_PROTO_RETURN_STRING("TYPE_FIXED32", 1);
+      RETURN_STRING("TYPE_FIXED32");
     case 8:
-      PHP_PROTO_RETURN_STRING("TYPE_BOOL", 1);
+      RETURN_STRING("TYPE_BOOL");
     case 9:
-      PHP_PROTO_RETURN_STRING("TYPE_STRING", 1);
+      RETURN_STRING("TYPE_STRING");
     case 10:
-      PHP_PROTO_RETURN_STRING("TYPE_GROUP", 1);
+      RETURN_STRING("TYPE_GROUP");
     case 11:
-      PHP_PROTO_RETURN_STRING("TYPE_MESSAGE", 1);
+      RETURN_STRING("TYPE_MESSAGE");
     case 12:
-      PHP_PROTO_RETURN_STRING("TYPE_BYTES", 1);
+      RETURN_STRING("TYPE_BYTES");
     case 13:
-      PHP_PROTO_RETURN_STRING("TYPE_UINT32", 1);
+      RETURN_STRING("TYPE_UINT32");
     case 14:
-      PHP_PROTO_RETURN_STRING("TYPE_ENUM", 1);
+      RETURN_STRING("TYPE_ENUM");
     case 15:
-      PHP_PROTO_RETURN_STRING("TYPE_SFIXED32", 1);
+      RETURN_STRING("TYPE_SFIXED32");
     case 16:
-      PHP_PROTO_RETURN_STRING("TYPE_SFIXED64", 1);
+      RETURN_STRING("TYPE_SFIXED64");
     case 17:
-      PHP_PROTO_RETURN_STRING("TYPE_SINT32", 1);
+      RETURN_STRING("TYPE_SINT32");
     case 18:
-      PHP_PROTO_RETURN_STRING("TYPE_SINT64", 1);
+      RETURN_STRING("TYPE_SINT64");
     default:
       zend_throw_exception_ex(NULL, 0 TSRMLS_CC,
                               "Enum Google\\Protobuf\\Field_Kind has no name "
@@ -1306,7 +1306,7 @@ PHP_METHOD(NullValue, name) {
   }
   switch (value) {
     case 0:
-      PHP_PROTO_RETURN_STRING("NULL_VALUE", 1);
+      RETURN_STRING("NULL_VALUE");
     default:
       zend_throw_exception_ex(NULL, 0 TSRMLS_CC,
                               "Enum Google\\Protobuf\\NullValue has no name "
@@ -1361,9 +1361,9 @@ PHP_METHOD(Syntax, name) {
   }
   switch (value) {
     case 0:
-      PHP_PROTO_RETURN_STRING("SYNTAX_PROTO2", 1);
+      RETURN_STRING("SYNTAX_PROTO2");
     case 1:
-      PHP_PROTO_RETURN_STRING("SYNTAX_PROTO3", 1);
+      RETURN_STRING("SYNTAX_PROTO3");
     default:
       zend_throw_exception_ex(NULL, 0 TSRMLS_CC,
                               "Enum Google\\Protobuf\\Syntax has no name "
@@ -1452,7 +1452,7 @@ PHP_PROTO_FIELD_ACCESSORS(Any, any, Value,   "value")
 PHP_METHOD(Any, unpack) {
   // Get type url.
   zval type_url_member;
-  PHP_PROTO_ZVAL_STRING(&type_url_member, "type_url", 1);
+  ZVAL_STRING(&type_url_member, "type_url");
   PHP_PROTO_FAKE_SCOPE_BEGIN(any_type);
   zval* type_url_php = php_proto_message_read_property(
       getThis(), &type_url_member PHP_PROTO_TSRMLS_CC);
@@ -1488,7 +1488,7 @@ PHP_METHOD(Any, unpack) {
 
   // Get value.
   zval value_member;
-  PHP_PROTO_ZVAL_STRING(&value_member, "value", 1);
+  ZVAL_STRING(&value_member, "value");
   PHP_PROTO_FAKE_SCOPE_RESTART(any_type);
   zval* value = php_proto_message_read_property(
       getThis(), &value_member PHP_PROTO_TSRMLS_CC);
@@ -1516,7 +1516,7 @@ PHP_METHOD(Any, pack) {
   serialize_to_string(val, &data TSRMLS_CC);
 
   zval member;
-  PHP_PROTO_ZVAL_STRING(&member, "value", 1);
+  ZVAL_STRING(&member, "value");
 
   PHP_PROTO_FAKE_SCOPE_BEGIN(any_type);
   message_handlers->write_property(getThis(), &member, &data,
@@ -1533,8 +1533,8 @@ PHP_METHOD(Any, pack) {
   char* type_url = ALLOC_N(char, type_url_len);
   sprintf(type_url, "%s%s", TYPE_URL_PREFIX, fully_qualified_name);
   zval type_url_php;
-  PHP_PROTO_ZVAL_STRING(&type_url_php, type_url, 1);
-  PHP_PROTO_ZVAL_STRING(&member, "type_url", 1);
+  ZVAL_STRING(&type_url_php, type_url);
+  ZVAL_STRING(&member, "type_url");
 
   PHP_PROTO_FAKE_SCOPE_RESTART(any_type);
   message_handlers->write_property(getThis(), &member, &type_url_php,
@@ -1567,7 +1567,7 @@ PHP_METHOD(Any, is) {
 
   // Fetch stored type url.
   zval member;
-  PHP_PROTO_ZVAL_STRING(&member, "type_url", 1);
+  ZVAL_STRING(&member, "type_url");
   PHP_PROTO_FAKE_SCOPE_BEGIN(any_type);
   zval* value =
       php_proto_message_read_property(getThis(), &member PHP_PROTO_TSRMLS_CC);
@@ -1668,7 +1668,7 @@ PHP_METHOD(Timestamp, fromDateTime) {
     zval retval;
     zval function_name;
 
-    PHP_PROTO_ZVAL_STRING(&function_name, "date_timestamp_get", 1);
+    ZVAL_STRING(&function_name, "date_timestamp_get");
 
     if (call_user_function(EG(function_table), NULL, &function_name, &retval, 1,
             ZVAL_PTR_TO_CACHED_PTR(datetime) TSRMLS_CC) == FAILURE) {
@@ -1688,8 +1688,8 @@ PHP_METHOD(Timestamp, fromDateTime) {
     zval function_name;
     zval format_string;
 
-    PHP_PROTO_ZVAL_STRING(&function_name, "date_format", 1);
-    PHP_PROTO_ZVAL_STRING(&format_string, "u", 1);
+    ZVAL_STRING(&function_name, "date_format");
+    ZVAL_STRING(&format_string, "u");
 
     CACHED_VALUE params[2] = {
       ZVAL_PTR_TO_CACHED_VALUE(datetime),
@@ -1751,9 +1751,9 @@ PHP_METHOD(Timestamp, toDateTime) {
   zval format_string;
   zval formatted_time_php;
 
-  PHP_PROTO_ZVAL_STRING(&function_name, "date_create_from_format", 1);
-  PHP_PROTO_ZVAL_STRING(&format_string, "U.u", 1);
-  PHP_PROTO_ZVAL_STRING(&formatted_time_php, formatted_time, 1);
+  ZVAL_STRING(&function_name, "date_create_from_format");
+  ZVAL_STRING(&format_string, "U.u");
+  ZVAL_STRING(&formatted_time_php, formatted_time);
 
   CACHED_VALUE params[2] = {
     ZVAL_TO_CACHED_VALUE(format_string),

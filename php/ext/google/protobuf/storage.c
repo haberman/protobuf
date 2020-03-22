@@ -289,13 +289,13 @@ void native_slot_get(upb_fieldtype_t type, const void* memory,
 #undef CASE
 
 #if SIZEOF_LONG == 4
-#define CASE(upb_type, c_type)                                       \
-  case UPB_TYPE_##upb_type: {                                        \
-    PHP_PROTO_SEPARATE_ZVAL_IF_NOT_REF(cache);                       \
-    char buffer[MAX_LENGTH_OF_INT64];                                \
-    sprintf(buffer, "%lld", DEREF(memory, c_type));                  \
-    PHP_PROTO_ZVAL_STRING(CACHED_PTR_TO_ZVAL_PTR(cache), buffer, 1); \
-    return;                                                          \
+#define CASE(upb_type, c_type)                          \
+  case UPB_TYPE_##upb_type: {                           \
+    PHP_PROTO_SEPARATE_ZVAL_IF_NOT_REF(cache);          \
+    char buffer[MAX_LENGTH_OF_INT64];                   \
+    sprintf(buffer, "%lld", DEREF(memory, c_type));     \
+    ZVAL_STRING(CACHED_PTR_TO_ZVAL_PTR(cache), buffer); \
+    return;                                             \
   }
 #else
 #define CASE(upb_type, c_type)                                       \
@@ -330,8 +330,8 @@ CASE(INT64,  int64_t)
       // value.
       zval* value = CACHED_PTR_TO_ZVAL_PTR((CACHED_VALUE*)memory);
       if (CACHED_PTR_TO_ZVAL_PTR(cache) != value) {
-        PHP_PROTO_ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), Z_STRVAL_P(value),
-                               Z_STRLEN_P(value), 1);
+        ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), Z_STRVAL_P(value),
+                     Z_STRLEN_P(value));
       }
       break;
     }
@@ -370,7 +370,7 @@ void native_slot_get_by_map_key(upb_fieldtype_t type, const void* memory,
   switch (type) {
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
-      PHP_PROTO_ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), memory, length, 1);
+      ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), memory, length);
       return;
     }
     default:
@@ -410,11 +410,11 @@ void native_slot_get_default(upb_fieldtype_t type,
 #undef CASE
 
 #if SIZEOF_LONG == 4
-#define CASE(upb_type)                                            \
-  case UPB_TYPE_##upb_type: {                                     \
-    PHP_PROTO_SEPARATE_ZVAL_IF_NOT_REF(cache);                    \
-    PHP_PROTO_ZVAL_STRING(CACHED_PTR_TO_ZVAL_PTR(cache), "0", 1); \
-    return;                                                       \
+#define CASE(upb_type)                               \
+  case UPB_TYPE_##upb_type: {                        \
+    PHP_PROTO_SEPARATE_ZVAL_IF_NOT_REF(cache);       \
+    ZVAL_STRING(CACHED_PTR_TO_ZVAL_PTR(cache), "0"); \
+    return;                                          \
   }
 #else
 #define CASE(upb_type)                           \
@@ -431,7 +431,7 @@ CASE(INT64)
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES: {
       PHP_PROTO_SEPARATE_ZVAL_IF_NOT_REF(cache);
-      PHP_PROTO_ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), "", 0, 1);
+      ZVAL_STRINGL(CACHED_PTR_TO_ZVAL_PTR(cache), "", 0);
       break;
     }
     case UPB_TYPE_MESSAGE: {

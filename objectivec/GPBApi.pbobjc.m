@@ -92,7 +92,11 @@ typedef struct GPBApi__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "name",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_Name,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBApi__storage_, name),
@@ -101,7 +105,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "methodsArray",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBMethod),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBMethod),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_MethodsArray,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBApi__storage_, methodsArray),
@@ -110,7 +118,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "optionsArray",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBOption),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBOption),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_OptionsArray,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBApi__storage_, optionsArray),
@@ -119,7 +131,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "version",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_Version,
         .hasIndex = 1,
         .offset = (uint32_t)offsetof(GPBApi__storage_, version),
@@ -128,7 +144,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "sourceContext",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBSourceContext),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBSourceContext),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_SourceContext,
         .hasIndex = 2,
         .offset = (uint32_t)offsetof(GPBApi__storage_, sourceContext),
@@ -137,7 +157,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "mixinsArray",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBMixin),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBMixin),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_MixinsArray,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBApi__storage_, mixinsArray),
@@ -146,7 +170,11 @@ typedef struct GPBApi__storage_ {
       },
       {
         .name = "syntax",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .dataTypeSpecific.enumDescFunc = GPBSyntax_EnumDescriptor,
+      #else
+        .dataTypeSpecific.enumDescFunc = GPBSyntax_EnumDescriptor,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBApi_FieldNumber_Syntax,
         .hasIndex = 3,
         .offset = (uint32_t)offsetof(GPBApi__storage_, syntax),
@@ -161,7 +189,11 @@ typedef struct GPBApi__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBApi__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG
@@ -213,7 +245,11 @@ typedef struct GPBMethod__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "name",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_Name,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBMethod__storage_, name),
@@ -222,7 +258,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "requestTypeURL",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_RequestTypeURL,
         .hasIndex = 1,
         .offset = (uint32_t)offsetof(GPBMethod__storage_, requestTypeURL),
@@ -231,7 +271,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "requestStreaming",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_RequestStreaming,
         .hasIndex = 2,
         .offset = 3,  // Stored in _has_storage_ to save space.
@@ -240,7 +284,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "responseTypeURL",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_ResponseTypeURL,
         .hasIndex = 4,
         .offset = (uint32_t)offsetof(GPBMethod__storage_, responseTypeURL),
@@ -249,7 +297,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "responseStreaming",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_ResponseStreaming,
         .hasIndex = 5,
         .offset = 6,  // Stored in _has_storage_ to save space.
@@ -258,7 +310,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "optionsArray",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBOption),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBOption),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_OptionsArray,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBMethod__storage_, optionsArray),
@@ -267,7 +323,11 @@ typedef struct GPBMethod__storage_ {
       },
       {
         .name = "syntax",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .dataTypeSpecific.enumDescFunc = GPBSyntax_EnumDescriptor,
+      #else
+        .dataTypeSpecific.enumDescFunc = GPBSyntax_EnumDescriptor,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMethod_FieldNumber_Syntax,
         .hasIndex = 7,
         .offset = (uint32_t)offsetof(GPBMethod__storage_, syntax),
@@ -282,7 +342,11 @@ typedef struct GPBMethod__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBMethod__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
 #if !GPBOBJC_SKIP_MESSAGE_TEXTFORMAT_EXTRAS
     static const char *extraTextFormatInfo =
         "\002\002\007\244\241!!\000\004\010\244\241!!\000";
@@ -331,7 +395,11 @@ typedef struct GPBMixin__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "name",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMixin_FieldNumber_Name,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBMixin__storage_, name),
@@ -340,7 +408,11 @@ typedef struct GPBMixin__storage_ {
       },
       {
         .name = "root",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBMixin_FieldNumber_Root,
         .hasIndex = 1,
         .offset = (uint32_t)offsetof(GPBMixin__storage_, root),
@@ -355,7 +427,11 @@ typedef struct GPBMixin__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBMixin__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG

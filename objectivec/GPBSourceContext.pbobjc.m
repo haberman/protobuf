@@ -66,7 +66,11 @@ typedef struct GPBSourceContext__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "fileName",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBSourceContext_FieldNumber_FileName,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBSourceContext__storage_, fileName),
@@ -81,7 +85,11 @@ typedef struct GPBSourceContext__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBSourceContext__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG

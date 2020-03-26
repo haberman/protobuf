@@ -100,6 +100,9 @@ void SetCommonFieldVariables(const FieldDescriptor* descriptor,
   (*variables)["dataTypeSpecific_name"] = "clazz";
   (*variables)["dataTypeSpecific_value"] = "Nil";
 
+  (*variables)["dataTypeSpecific_name_30002"] = "className";
+  (*variables)["dataTypeSpecific_value_30002"] = "NULL";
+
   (*variables)["storage_offset_value"] =
       "(uint32_t)offsetof(" + classname + "__storage_, " + camel_case_name + ")";
   (*variables)["storage_offset_comment"] = "";
@@ -195,7 +198,11 @@ void FieldGenerator::GenerateFieldDescription(
         "{\n"
         "  .defaultValue.$default_name$ = $default$,\n"
         "  .core.name = \"$name$\",\n"
+        "#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
+        "  .core.dataTypeSpecific.$dataTypeSpecific_name_30002$ = $dataTypeSpecific_value_30002$,\n"
+        "#else\n"
         "  .core.dataTypeSpecific.$dataTypeSpecific_name$ = $dataTypeSpecific_value$,\n"
+        "#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
         "  .core.number = $field_number_name$,\n"
         "  .core.hasIndex = $has_index$,\n"
         "  .core.offset = $storage_offset_value$,$storage_offset_comment$\n"
@@ -207,7 +214,11 @@ void FieldGenerator::GenerateFieldDescription(
         variables_,
         "{\n"
         "  .name = \"$name$\",\n"
+        "#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
+        "  .dataTypeSpecific.$dataTypeSpecific_name_30002$ = $dataTypeSpecific_value_30002$,\n"
+        "#else\n"
         "  .dataTypeSpecific.$dataTypeSpecific_name$ = $dataTypeSpecific_value$,\n"
+        "#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
         "  .number = $field_number_name$,\n"
         "  .hasIndex = $has_index$,\n"
         "  .offset = $storage_offset_value$,$storage_offset_comment$\n"

@@ -60,6 +60,9 @@ void SetEnumVariables(const FieldDescriptor* descriptor,
   (*variables)["dataTypeSpecific_name"] = "enumDescFunc";
   (*variables)["dataTypeSpecific_value"] = (*variables)["enum_desc_func"];
 
+  (*variables)["dataTypeSpecific_name_30002"] = "enumDescFunc";
+  (*variables)["dataTypeSpecific_value_30002"] = (*variables)["enum_desc_func"];
+
   const Descriptor* msg_descriptor = descriptor->containing_type();
   (*variables)["owning_message_class"] = ClassName(msg_descriptor);
 }

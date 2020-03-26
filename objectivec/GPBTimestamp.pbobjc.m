@@ -68,7 +68,11 @@ typedef struct GPBTimestamp__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "seconds",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBTimestamp_FieldNumber_Seconds,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBTimestamp__storage_, seconds),
@@ -77,7 +81,11 @@ typedef struct GPBTimestamp__storage_ {
       },
       {
         .name = "nanos",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBTimestamp_FieldNumber_Nanos,
         .hasIndex = 1,
         .offset = (uint32_t)offsetof(GPBTimestamp__storage_, nanos),
@@ -92,7 +100,11 @@ typedef struct GPBTimestamp__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBTimestamp__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG

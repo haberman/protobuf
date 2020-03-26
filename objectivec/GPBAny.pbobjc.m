@@ -68,7 +68,11 @@ typedef struct GPBAny__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "typeURL",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBAny_FieldNumber_TypeURL,
         .hasIndex = 0,
         .offset = (uint32_t)offsetof(GPBAny__storage_, typeURL),
@@ -77,7 +81,11 @@ typedef struct GPBAny__storage_ {
       },
       {
         .name = "value",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBAny_FieldNumber_Value,
         .hasIndex = 1,
         .offset = (uint32_t)offsetof(GPBAny__storage_, value),
@@ -92,7 +100,11 @@ typedef struct GPBAny__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBAny__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
 #if !GPBOBJC_SKIP_MESSAGE_TEXTFORMAT_EXTRAS
     static const char *extraTextFormatInfo =
         "\001\001\004\241!!\000";

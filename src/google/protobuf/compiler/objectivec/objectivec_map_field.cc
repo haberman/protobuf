@@ -143,6 +143,11 @@ MapFieldGenerator::MapFieldGenerator(const FieldDescriptor* descriptor,
       value_field_generator_->variable("dataTypeSpecific_name");
   variables_["dataTypeSpecific_value"] =
       value_field_generator_->variable("dataTypeSpecific_value");
+
+  variables_["dataTypeSpecific_name_30002"] =
+      value_field_generator_->variable("dataTypeSpecific_name_30002");
+  variables_["dataTypeSpecific_value_30002"] =
+      value_field_generator_->variable("dataTypeSpecific_value_30002");
 }
 
 MapFieldGenerator::~MapFieldGenerator() {}

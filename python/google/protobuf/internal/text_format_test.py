@@ -97,7 +97,7 @@ class TextFormatBase(unittest.TestCase):
     text = text.replace('e+0','e+').replace('e+0','e+') \
                .replace('e-0','e-').replace('e-0','e-')
     # Floating point fields are printed with .0 suffix even if they are
-    # actually integer numbers.
+    # actualy integer numbers.
     text = re.compile(r'\.0$', re.MULTILINE).sub('', text)
     return text
 
@@ -2192,6 +2192,24 @@ class WhitespaceTest(TextFormatBase):
                 optional_string: "value"
               }
             }"""))
+
+
+class OptionalColonMessageToStringTest(unittest.TestCase):
+
+  def testForcePrintOptionalColon(self):
+    packed_message = unittest_pb2.OneString()
+    packed_message.data = 'string'
+    message = any_test_pb2.TestAny()
+    message.any_value.Pack(packed_message)
+    output = text_format.MessageToString(
+        message,
+        force_colon=True)
+    expected = ('any_value: {\n'
+                '  [type.googleapis.com/protobuf_unittest.OneString]: {\n'
+                '    data: "string"\n'
+                '  }\n'
+                '}\n')
+    self.assertEqual(expected, output)
 
 
 if __name__ == '__main__':

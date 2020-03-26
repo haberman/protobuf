@@ -85,6 +85,7 @@ void ExtensionGenerator::GenerateStaticVariablesInitialization(
   std::map<string, string> vars;
   vars["root_class_and_method_name"] = root_class_and_method_name_;
   const string containing_type = ClassName(descriptor_->containing_type());
+  vars["extended_type_30002"] = containing_type;
   vars["extended_type"] = ObjCClass(containing_type);
   vars["number"] = StrCat(descriptor_->number());
 
@@ -100,8 +101,10 @@ void ExtensionGenerator::GenerateStaticVariablesInitialization(
   if (objc_type == OBJECTIVECTYPE_MESSAGE) {
     std::string message_type = ClassName(descriptor_->message_type());
     vars["type"] = ObjCClass(message_type);
+    vars["type_30002"] = string("GPBStringifySymbol(") + message_type + ")";
   } else {
     vars["type"] = "Nil";
+    vars["type_30002"] = "NULL";
   }
 
   vars["default_name"] = GPBGenericValueFieldName(descriptor_);
@@ -124,8 +127,13 @@ void ExtensionGenerator::GenerateStaticVariablesInitialization(
                  "{\n"
                  "  .defaultValue.$default_name$ = $default$,\n"
                  "  .singletonName = GPBStringifySymbol($root_class_and_method_name$),\n"
+                 "#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
+                 "  .extendedClass.name = GPBStringifySymbol($extended_type_30002$),\n"
+                 "  .messageOrGroupClass.name = $type_30002$,\n"
+                 "#else\n"
                  "  .extendedClass.clazz = $extended_type$,\n"
                  "  .messageOrGroupClass.clazz = $type$,\n"
+                 "#endif // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
                  "  .enumDescriptorFunc = $enum_desc_func_name$,\n"
                  "  .fieldNumber = $number$,\n"
                  "  .dataType = $extension_type$,\n"

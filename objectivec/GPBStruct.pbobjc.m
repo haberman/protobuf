@@ -111,7 +111,11 @@ typedef struct GPBStruct__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "fields",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBValue),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBValue),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBStruct_FieldNumber_Fields,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBStruct__storage_, fields),
@@ -126,7 +130,11 @@ typedef struct GPBStruct__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBStruct__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG
@@ -166,7 +174,11 @@ typedef struct GPBValue__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "nullValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .dataTypeSpecific.enumDescFunc = GPBNullValue_EnumDescriptor,
+      #else
+        .dataTypeSpecific.enumDescFunc = GPBNullValue_EnumDescriptor,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_NullValue,
         .hasIndex = -1,
         .offset = (uint32_t)offsetof(GPBValue__storage_, nullValue),
@@ -175,7 +187,11 @@ typedef struct GPBValue__storage_ {
       },
       {
         .name = "numberValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_NumberValue,
         .hasIndex = -1,
         .offset = (uint32_t)offsetof(GPBValue__storage_, numberValue),
@@ -184,7 +200,11 @@ typedef struct GPBValue__storage_ {
       },
       {
         .name = "stringValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_StringValue,
         .hasIndex = -1,
         .offset = (uint32_t)offsetof(GPBValue__storage_, stringValue),
@@ -193,7 +213,11 @@ typedef struct GPBValue__storage_ {
       },
       {
         .name = "boolValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = NULL,
+      #else
         .dataTypeSpecific.clazz = Nil,
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_BoolValue,
         .hasIndex = -1,
         .offset = 0,  // Stored in _has_storage_ to save space.
@@ -202,7 +226,11 @@ typedef struct GPBValue__storage_ {
       },
       {
         .name = "structValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBStruct),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBStruct),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_StructValue,
         .hasIndex = -1,
         .offset = (uint32_t)offsetof(GPBValue__storage_, structValue),
@@ -211,7 +239,11 @@ typedef struct GPBValue__storage_ {
       },
       {
         .name = "listValue",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBListValue),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBListValue),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBValue_FieldNumber_ListValue,
         .hasIndex = -1,
         .offset = (uint32_t)offsetof(GPBValue__storage_, listValue),
@@ -226,7 +258,11 @@ typedef struct GPBValue__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBValue__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     static const char *oneofs[] = {
       "kind",
     };
@@ -279,7 +315,11 @@ typedef struct GPBListValue__storage_ {
     static GPBMessageFieldDescription fields[] = {
       {
         .name = "valuesArray",
+      #ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+        .dataTypeSpecific.className = GPBStringifySymbol(GPBValue),
+      #else
         .dataTypeSpecific.clazz = GPBObjCClass(GPBValue),
+      #endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
         .number = GPBListValue_FieldNumber_ValuesArray,
         .hasIndex = GPBNoHasBit,
         .offset = (uint32_t)offsetof(GPBListValue__storage_, valuesArray),
@@ -294,7 +334,11 @@ typedef struct GPBListValue__storage_ {
                                         fields:fields
                                     fieldCount:(uint32_t)(sizeof(fields) / sizeof(GPBMessageFieldDescription))
                                    storageSize:sizeof(GPBListValue__storage_)
+#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
+                                         flags:GPBDescriptorInitializationFlag_None];
+#else
                                          flags:GPBDescriptorInitializationFlag_UsesClassRefs];
+#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT
     #if defined(DEBUG) && DEBUG
       NSAssert(descriptor == nil, @"Startup recursed!");
     #endif  // DEBUG

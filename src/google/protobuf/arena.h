@@ -248,7 +248,7 @@ struct ArenaOptions {
 // well as protobuf container types like RepeatedPtrField and Map. The protocol
 // is internal to protobuf and is not guaranteed to be stable. Non-proto types
 // should not rely on this protocol.
-class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
+class PROTOBUF_EXPORT alignas(8) Arena final {
  public:
   // Arena constructor taking custom options. See ArenaOptions below for
   // descriptions of the options available.
@@ -338,10 +338,8 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
   template <typename T>
   PROTOBUF_ALWAYS_INLINE static T* CreateArray(Arena* arena,
                                                size_t num_elements) {
-#ifndef __INTEL_COMPILER // icc mis-evaluates some types as non-pod
     static_assert(std::is_pod<T>::value,
                   "CreateArray requires a trivially constructible type");
-#endif
     static_assert(std::is_trivially_destructible<T>::value,
                   "CreateArray requires a trivially destructible type");
     GOOGLE_CHECK_LE(num_elements, std::numeric_limits<size_t>::max() / sizeof(T))
@@ -534,6 +532,7 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
   // the cookie is not null.
   template <typename T>
   PROTOBUF_ALWAYS_INLINE void* AllocateInternal(bool skip_explicit_ownership) {
+    static_assert(alignof(T) <= 8, "T is overaligned, see b/151247138");
     const size_t n = internal::AlignUpTo8(sizeof(T));
     AllocHook(RTTI_TYPE_ID(T), n);
     // Monitor allocation if needed.
@@ -618,24 +617,25 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
   // CreateInArenaStorage is used to implement map field. Without it,
   // Map need to call generated message's protected arena constructor,
   // which needs to declare Map as friend of generated message.
-  template <typename T>
-  static void CreateInArenaStorage(T* ptr, Arena* arena) {
+  template <typename T, typename... Args>
+  static void CreateInArenaStorage(T* ptr, Arena* arena, Args&&... args) {
     CreateInArenaStorageInternal(ptr, arena,
-                                 typename is_arena_constructable<T>::type());
+                                 typename is_arena_constructable<T>::type(),
+                                 std::forward<Args>(args)...);
     RegisterDestructorInternal(
         ptr, arena,
         typename InternalHelper<T>::is_destructor_skippable::type());
   }
 
-  template <typename T>
+  template <typename T, typename... Args>
   static void CreateInArenaStorageInternal(T* ptr, Arena* arena,
-                                           std::true_type) {
-    InternalHelper<T>::Construct(ptr, arena);
+                                           std::true_type, Args&&... args) {
+    InternalHelper<T>::Construct(ptr, arena, std::forward<Args>(args)...);
   }
-  template <typename T>
+  template <typename T, typename... Args>
   static void CreateInArenaStorageInternal(T* ptr, Arena* /* arena */,
-                                           std::false_type) {
-    new (ptr) T();
+                                           std::false_type, Args&&... args) {
+    new (ptr) T(std::forward<Args>(args)...);
   }
 
   template <typename T>

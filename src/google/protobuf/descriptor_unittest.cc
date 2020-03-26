@@ -243,7 +243,7 @@ class MockErrorCollector : public DescriptorPool::ErrorCollector {
     }
 
     strings::SubstituteAndAppend(&text_, "$0: $1: $2: $3\n", filename,
-                                 element_name, location_name, message);
+                              element_name, location_name, message);
   }
 
   // implements ErrorCollector ---------------------------------------
@@ -287,8 +287,9 @@ class MockErrorCollector : public DescriptorPool::ErrorCollector {
         break;
     }
 
-    strings::SubstituteAndAppend(&warning_text_, "$0: $1: $2: $3\n", filename,
-                                 element_name, location_name, message);
+    strings::SubstituteAndAppend(&warning_text_, "$0: $1: $2: $3\n",
+                                       filename, element_name, location_name,
+                                       message);
   }
 };
 
@@ -490,7 +491,7 @@ TEST_F(FileDescriptorTest, BuildAgain) {
 }
 
 TEST_F(FileDescriptorTest, BuildAgainWithSyntax) {
-  // Test that if te call BuildFile again on the same input we get the same
+  // Test that if we call BuildFile again on the same input we get the same
   // FileDescriptor back even if syntax param is specified.
   FileDescriptorProto proto_syntax2;
   proto_syntax2.set_name("foo_syntax2");
@@ -2532,7 +2533,7 @@ TEST_F(MiscTest, DefaultValues) {
   AddField(message_proto, "empty_string", 11, label, FD::TYPE_STRING)
       ->set_default_value("");
 
-  // Add a second set of fields with implicit default values.
+  // Add a second set of fields with implicit defalut values.
   AddField(message_proto, "implicit_int32", 21, label, FD::TYPE_INT32);
   AddField(message_proto, "implicit_int64", 22, label, FD::TYPE_INT64);
   AddField(message_proto, "implicit_uint32", 23, label, FD::TYPE_UINT32);
@@ -2652,9 +2653,11 @@ TEST_F(MiscTest, FieldOptions) {
 enum DescriptorPoolMode { NO_DATABASE, FALLBACK_DATABASE };
 
 class AllowUnknownDependenciesTest
-    : public testing::TestWithParam<DescriptorPoolMode> {
+    : public testing::TestWithParam<
+          std::tuple<DescriptorPoolMode, const char*>> {
  protected:
-  DescriptorPoolMode mode() { return GetParam(); }
+  DescriptorPoolMode mode() { return std::get<0>(GetParam()); }
+  const char* syntax() { return std::get<1>(GetParam()); }
 
   virtual void SetUp() {
     FileDescriptorProto foo_proto, bar_proto;
@@ -2693,10 +2696,13 @@ class AllowUnknownDependenciesTest
         "  }"
         "}",
         &foo_proto));
+    foo_proto.set_syntax(syntax());
+
     ASSERT_TRUE(
         TextFormat::ParseFromString("name: 'bar.proto'"
                                     "message_type { name: 'Bar' }",
                                     &bar_proto));
+    bar_proto.set_syntax(syntax());
 
     // Collect pointers to stuff.
     bar_file_ = BuildFile(bar_proto);
@@ -2969,7 +2975,9 @@ TEST_P(AllowUnknownDependenciesTest,
 }
 
 INSTANTIATE_TEST_SUITE_P(DatabaseSource, AllowUnknownDependenciesTest,
-                         testing::Values(NO_DATABASE, FALLBACK_DATABASE));
+                         testing::Combine(testing::Values(NO_DATABASE,
+                                                          FALLBACK_DATABASE),
+                                          testing::Values("proto2", "proto3")));
 
 // ===================================================================
 
@@ -3456,7 +3464,7 @@ TEST(CustomOptions, AggregateOptions) {
             method->options().GetExtension(protobuf_unittest::methodopt).s());
 }
 
-TEST(CustomOptions, UnusedImportWarning) {
+TEST(CustomOptions, UnusedImportError) {
   DescriptorPool pool;
 
   FileDescriptorProto file_proto;
@@ -3467,7 +3475,7 @@ TEST(CustomOptions, UnusedImportWarning) {
       &file_proto);
   ASSERT_TRUE(pool.BuildFile(file_proto) != nullptr);
 
-  pool.AddUnusedImportTrackFile("custom_options_import.proto");
+  pool.AddUnusedImportTrackFile("custom_options_import.proto", true);
   ASSERT_TRUE(TextFormat::ParseFromString(
       "name: \"custom_options_import.proto\" "
       "package: \"protobuf_unittest\" "
@@ -3475,13 +3483,12 @@ TEST(CustomOptions, UnusedImportWarning) {
       &file_proto));
 
   MockErrorCollector error_collector;
-  EXPECT_TRUE(pool.BuildFileCollectingErrors(file_proto, &error_collector));
+  EXPECT_FALSE(pool.BuildFileCollectingErrors(file_proto, &error_collector));
   EXPECT_EQ(
       "custom_options_import.proto: "
       "google/protobuf/unittest_custom_options.proto: IMPORT: Import "
       "google/protobuf/unittest_custom_options.proto is unused.\n",
-      error_collector.warning_text_);
-  EXPECT_EQ("", error_collector.text_);
+      error_collector.text_);
 }
 
 // Verifies that proto files can correctly be parsed, even if the
@@ -5177,7 +5184,7 @@ TEST_F(ValidationErrorTest, RepeatedMessageOption) {
 }
 
 TEST_F(ValidationErrorTest, ResolveUndefinedOption) {
-  // The following should produce an error that baz.bar is resolved but not
+  // The following should produce an eror that baz.bar is resolved but not
   // defined.
   // foo.proto:
   //   package baz
@@ -6502,6 +6509,27 @@ TEST_F(ValidationErrorTest, ValidateProto3JsonName) {
 }
 
 
+TEST_F(ValidationErrorTest, UnusedImportWithOtherError) {
+  BuildFile(
+      "name: 'bar.proto' "
+      "message_type {"
+      "  name: 'Bar'"
+      "}");
+
+  pool_.AddUnusedImportTrackFile("foo.proto", true);
+  BuildFileWithErrors(
+      "name: 'foo.proto' "
+      "dependency: 'bar.proto' "
+      "message_type {"
+      "  name: 'Foo'"
+      "  extension { name:'foo' number:1 label:LABEL_OPTIONAL type:TYPE_INT32"
+      "              extendee: 'Baz' }"
+      "}",
+
+      // Should not also contain unused import error.
+      "foo.proto: Foo.foo: EXTENDEE: \"Baz\" is not defined.\n");
+}
+
 // ===================================================================
 // DescriptorDatabase
 
@@ -6950,22 +6978,21 @@ class ExponentialErrorDatabase : public DescriptorDatabase {
   }
 
   bool PopulateFile(int file_num, FileDescriptorProto* output) {
-    using strings::Substitute;
     GOOGLE_CHECK_GE(file_num, 0);
     output->Clear();
-    output->set_name(Substitute("file$0.proto", file_num));
+    output->set_name(strings::Substitute("file$0.proto", file_num));
     // file0.proto doesn't define Message0
     if (file_num > 0) {
       DescriptorProto* message = output->add_message_type();
-      message->set_name(Substitute("Message$0", file_num));
+      message->set_name(strings::Substitute("Message$0", file_num));
       for (int i = 0; i < file_num; ++i) {
-        output->add_dependency(Substitute("file$0.proto", i));
+        output->add_dependency(strings::Substitute("file$0.proto", i));
         FieldDescriptorProto* field = message->add_field();
-        field->set_name(Substitute("field$0", i));
+        field->set_name(strings::Substitute("field$0", i));
         field->set_number(i);
         field->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
         field->set_type(FieldDescriptorProto::TYPE_MESSAGE);
-        field->set_type_name(Substitute("Message$0", i));
+        field->set_type_name(strings::Substitute("Message$0", i));
       }
     }
     return true;
@@ -7140,8 +7167,8 @@ class SourceLocationTest : public testing::Test {
 
   static std::string PrintSourceLocation(const SourceLocation& loc) {
     return strings::Substitute("$0:$1-$2:$3", 1 + loc.start_line,
-                               1 + loc.start_column, 1 + loc.end_line,
-                               1 + loc.end_column);
+                                     1 + loc.start_column, 1 + loc.end_line,
+                                     1 + loc.end_column);
   }
 
  private:
@@ -7773,7 +7800,7 @@ TEST_F(LazilyBuildDependenciesTest, Message) {
   EXPECT_FALSE(pool_.InternalIsFileLoaded("bar.proto"));
 
   // Finally, verify that if we call message_type() on the field, we will
-  // build the file where the message is defined, and get a valid descriptor
+  // buid the file where the message is defined, and get a valid descriptor
   EXPECT_TRUE(field->message_type() != nullptr);
   EXPECT_TRUE(pool_.InternalIsFileLoaded("bar.proto"));
 }

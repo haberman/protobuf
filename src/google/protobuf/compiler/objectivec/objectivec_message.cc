@@ -514,13 +514,15 @@ void MessageGenerator::GenerateSource(io::Printer* printer) {
     }
 
     std::vector<string> init_flags;
-    init_flags.push_back("GPBDescriptorInitializationFlag_UsesClassRefs");
     if (need_defaults) {
       init_flags.push_back("GPBDescriptorInitializationFlag_FieldsWithDefault");
     }
     if (descriptor_->options().message_set_wire_format()) {
       init_flags.push_back("GPBDescriptorInitializationFlag_WireFormat");
     }
+    vars["init_flags_30002"] = BuildFlagsString(FLAGTYPE_DESCRIPTOR_INITIALIZATION,
+                                                init_flags);
+    init_flags.push_back("GPBDescriptorInitializationFlag_UsesClassRefs");
     vars["init_flags"] = BuildFlagsString(FLAGTYPE_DESCRIPTOR_INITIALIZATION,
                                           init_flags);
 
@@ -533,7 +535,11 @@ void MessageGenerator::GenerateSource(io::Printer* printer) {
         "                                        fields:$fields$\n"
         "                                    fieldCount:$fields_count$\n"
         "                                   storageSize:sizeof($classname$__storage_)\n"
-        "                                         flags:$init_flags$];\n");
+        "#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
+        "                                         flags:$init_flags_30002$];\n"
+        "#else\n"
+        "                                         flags:$init_flags$];\n"
+        "#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n");
     if (!oneof_generators_.empty()) {
       printer->Print(
           "    static const char *oneofs[] = {\n");
@@ -582,8 +588,12 @@ void MessageGenerator::GenerateSource(io::Printer* printer) {
       string containing_class = ClassName(descriptor_->containing_type());
       string parent_class_ref = ObjCClass(containing_class);
       printer->Print(
-          "    [localDescriptor setupContainingMessageClass:$parent_class_ref$];\n",
-          "parent_class_ref", parent_class_ref);
+          "#ifdef GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n"
+          "    [localDescriptor setupContainingMessageClassName:GPBStringifySymbol($parent_name$)];\n"
+          "#else\n"
+          "    [localDescriptor setupContainingMessageClass:$parent_class_ref$];\n"
+          "#endif  // GOOGLE_PROTOBUF_OBJC_VERSION_30002_COMPAT\n",
+          "parent_class_ref", parent_class_ref, "parent_name", containing_class);
     }
     string suffix_added;
     ClassName(descriptor_, &suffix_added);

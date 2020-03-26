@@ -53,6 +53,7 @@ void SetMessageVariables(const FieldDescriptor* descriptor,
   (*variables)["group_or_message"] =
       (descriptor->type() == FieldDescriptor::TYPE_GROUP) ? "Group" : "Message";
   (*variables)["dataTypeSpecific_value"] = ObjCClass(message_type);
+  (*variables)["dataTypeSpecific_value_30002"] = "GPBStringifySymbol(" + message_type + ")";
 }
 
 }  // namespace

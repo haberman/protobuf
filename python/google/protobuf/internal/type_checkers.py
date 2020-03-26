@@ -38,13 +38,18 @@ TYPE_TO_BYTE_SIZE_FN: A dictionary with field types and a size computing
 TYPE_TO_SERIALIZE_METHOD: A dictionary with field types and serialization
   function.
 FIELD_TYPE_TO_WIRE_TYPE: A dictionary with field typed and their
-  corresponding wire types.
+  coresponding wire types.
 TYPE_TO_DESERIALIZE_METHOD: A dictionary with field types and deserialization
   function.
 """
 
 __author__ = 'robinson@google.com (Will Robinson)'
 
+try:
+  import ctypes
+except Exception:  # pylint: disable=broad-except
+  ctypes = None
+  import struct
 import numbers
 import six
 
@@ -257,9 +262,10 @@ class FloatValueChecker(object):
     if converted_value < _FLOAT_MIN:
       return _NEG_INF
 
-    return converted_value
-    # TODO(jieluo): convert to 4 bytes float (c style float) at setters:
-    # return struct.unpack('f', struct.pack('f', converted_value))
+    if ctypes:
+      return ctypes.c_float(converted_value).value
+    else:
+      return struct.unpack('<f', struct.pack('<f', converted_value))[0]
 
   def DefaultValue(self):
     return 0.0

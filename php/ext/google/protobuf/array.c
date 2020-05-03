@@ -33,6 +33,7 @@
 #include <Zend/zend_interfaces.h>
 
 #include "protobuf.h"
+#include "convert.h"
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetGet, 0, 0, 1)
   ZEND_ARG_INFO(0, index)

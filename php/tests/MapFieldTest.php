@@ -1,11 +1,51 @@
 <?php
 
-require_once('test_util.php');
+#require_once('test_util.php');
 
 use Google\Protobuf\Internal\GPBType;
 use Google\Protobuf\Internal\MapField;
-use Foo\TestMessage;
-use Foo\TestMessage\Sub;
+#use Foo\TestMessage;
+#use Foo\TestMessage\Sub;
+
+define('MAX_FLOAT_DIFF', 0.000001);
+
+if (PHP_INT_SIZE == 8) {
+    define('MAX_INT_STRING', '9223372036854775807');
+    define('MAX_INT_UPPER_STRING', '9223372036854775808');
+} else {
+    define('MAX_INT_STRING', '2147483647');
+    define('MAX_INT_UPPER_STRING', '2147483648');
+}
+
+define('MAX_INT32', 2147483647);
+define('MAX_INT32_FLOAT', 2147483647.0);
+define('MAX_INT32_STRING', '2147483647');
+
+define('MIN_INT32', (int)-2147483648);
+define('MIN_INT32_FLOAT', -2147483648.0);
+define('MIN_INT32_STRING', '-2147483648');
+
+define('MAX_UINT32', 4294967295);
+define('MAX_UINT32_FLOAT', 4294967295.0);
+define('MAX_UINT32_STRING', '4294967295');
+
+define('MIN_UINT32', (int)-2147483648);
+define('MIN_UINT32_FLOAT', -2147483648.0);
+define('MIN_UINT32_STRING', '-2147483648');
+
+define('MAX_INT64_STRING',  '9223372036854775807');
+define('MIN_INT64_STRING',  '-9223372036854775808');
+define('MAX_UINT64_STRING', '-9223372036854775808');
+
+if (PHP_INT_SIZE === 8) {
+    define('MAX_INT64',  (int)9223372036854775807);
+    define('MIN_INT64',  (int)-9223372036854775808);
+    define('MAX_UINT64', (int)-9223372036854775808);
+} else {
+    define('MAX_INT64', MAX_INT64_STRING);
+    define('MIN_INT64', MIN_INT64_STRING);
+    define('MAX_UINT64', MAX_UINT64_STRING);
+}
 
 class MapFieldTest extends \PHPUnit\Framework\TestCase {
 
@@ -74,6 +114,7 @@ class MapFieldTest extends \PHPUnit\Framework\TestCase {
         $this->assertTrue(isset($arr_test[2]));
         $this->assertSame(3, $i);
     }
+    /*
 
     #########################################################
     # Test uint32 field.
@@ -478,6 +519,7 @@ class MapFieldTest extends \PHPUnit\Framework\TestCase {
         $m = new TestMessage();
         $m->setMapInt32Message($values);
     }
+     */
 
     #########################################################
     # Test memory leak

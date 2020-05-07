@@ -30,7 +30,7 @@
 
 #include "convert.h"
 
-#include "lite-upb.h"
+#include "core-upb.h"
 
 upb_fieldtype_t pbphp_dtype_to_type(upb_descriptortype_t type) {
   switch (type) {

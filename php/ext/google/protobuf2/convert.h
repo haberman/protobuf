@@ -33,7 +33,7 @@
 
 #include <php.h>
 
-#include "lite-upb.h"
+#include "core-upb.h"
 
 upb_fieldtype_t pbphp_dtype_to_type(upb_descriptortype_t type);
 bool pbphp_toi64(zval *php_val, int64_t *i64);

@@ -28,14 +28,20 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <ext/spl/spl_iterators.h>
+#include "map.h"
+
 #include <Zend/zend_API.h>
 #include <Zend/zend_interfaces.h>
 
+#include <ext/spl/spl_iterators.h>
+
 #include "arena.h"
-#include "lite-upb.h"
+#include "convert.h"
+#include "core-upb.h"
 
 //#include "utf8.h"
+
+static void MapFieldIter_make(zval *val, zval *map_field);
 
 // -----------------------------------------------------------------------------
 // MapField
@@ -84,9 +90,15 @@ static HashTable *map_field_get_gc(zval *object, zval **table, int *n) {
   return NULL;
 }
 
+/**
+ * Constructs an instance of RepeatedField.
+ * @param long Key type.
+ * @param long Value type.
+ * @param string Message/Enum class (message/enum value types only).
+ */
 PHP_METHOD(MapField, __construct) {
-  MapField *intern = (MapField*)Z_OBJ_P(object);
-  upb_arena *arena = to_arena(&intern->arena);
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
+  upb_arena *arena = arena_get(&intern->arena);
   zend_long key_type, value_type;
   zend_class_entry* klass = NULL;
 
@@ -97,7 +109,7 @@ PHP_METHOD(MapField, __construct) {
 
   intern->key_type = pbphp_dtype_to_type(key_type);
   intern->value_type = pbphp_dtype_to_type(value_type);
-  intern->msg_ce = klass;
+  intern->klass = klass;
 
   // Check that the key type is an allowed type.
   switch (intern->key_type) {
@@ -118,12 +130,12 @@ PHP_METHOD(MapField, __construct) {
 }
 
 PHP_METHOD(MapField, offsetExists) {
-  MapField *intern = (MapField*)Z_OBJ_P(object);
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
   zval *key;
   upb_msgval upb_key;
 
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &key) != SUCCESS ||
-      !pbphp_tomsgval(key, &upb_key, intern->key_type, NULL)) {
+      !pbphp_tomsgval(key, &upb_key, intern->key_type, intern->klass, NULL)) {
     return;
   }
 
@@ -131,54 +143,82 @@ PHP_METHOD(MapField, offsetExists) {
 }
 
 PHP_METHOD(MapField, offsetGet) {
-  MapField *intern = (MapField*)Z_OBJ_P(object);
-  zval *index;
-  upb_msgval upb_key;
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
+  zval *key;
+  zval ret;
+  upb_msgval upb_key, upb_val;
 
-  if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &index) != SUCCESS ||
-      !pbphp_tomsgval(key, &upb_key, intern->key_type, NULL)) {
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &key) != SUCCESS ||
+      !pbphp_tomsgval(key, &upb_key, intern->key_type, intern->klass, NULL)) {
     return;
   }
 
-  map_field_read_dimension(getThis(), index, BP_VAR_R,
-                           ZVAL_PTR_TO_CACHED_PTR(return_value));
+  if (!upb_map_get(intern->map, upb_key, &upb_val)) {
+    zend_error(E_USER_ERROR, "Given key doesn't exist.");
+    return;
+  }
+
+  pbphp_tozval(upb_val, &ret, intern->value_type, intern->klass);
+  RETURN_ZVAL(&ret, 0, 1);
 }
 
 PHP_METHOD(MapField, offsetSet) {
-  zval *index, *value;
-  if (zend_parse_parameters(ZEND_NUM_ARGS(), "zz", &index, &value) ==
-      FAILURE) {
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
+  upb_arena *arena = arena_get(&intern->arena);
+  zval *key, *val;
+  upb_msgval upb_key, upb_val;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "zz", &key, &val) != SUCCESS ||
+      !pbphp_tomsgval(key, &upb_key, intern->key_type, NULL, NULL) ||
+      !pbphp_tomsgval(val, &upb_val, intern->value_type, intern->klass, NULL)) {
     return;
   }
-  map_field_write_dimension(getThis(), index, value);
+
+  upb_map_set(intern->map, upb_key, upb_val, arena);
 }
 
 PHP_METHOD(MapField, offsetUnset) {
-  zval *index;
-  if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &index) ==
-      FAILURE) {
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
+  zval *key;
+  upb_msgval upb_key;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &key) != SUCCESS ||
+      !pbphp_tomsgval(key, &upb_key, intern->key_type, NULL, NULL)) {
     return;
   }
-  map_field_unset_dimension(getThis(), index);
+
+  upb_map_delete(intern->map, upb_key);
 }
 
 PHP_METHOD(MapField, count) {
-  Map *intern = UNBOX(Map, getThis());
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
 
   if (zend_parse_parameters_none() == FAILURE) {
     return;
   }
 
-  RETURN_LONG(upb_strtable_count(&intern->table));
+  RETURN_LONG(upb_map_size(intern->map));
 }
 
 PHP_METHOD(MapField, getIterator) {
-  CREATE_OBJ_ON_ALLOCATED_ZVAL_PTR(return_value,
-                                   map_field_iter_type);
+  MapField *intern = (MapField*)Z_OBJ_P(getThis());
+  zval ret;
 
-  MapIter *iter = UNBOX(MapIter, return_value);
-  map_begin(getThis(), iter);
+  MapFieldIter_make(&ret, getThis());
+  RETURN_ZVAL(&ret, 0, 1);
 }
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetGet, 0, 0, 1)
+  ZEND_ARG_INFO(0, index)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetSet, 0, 0, 2)
+  ZEND_ARG_INFO(0, index)
+  ZEND_ARG_INFO(0, newval)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_void, 0)
+ZEND_END_ARG_INFO()
 
 static zend_function_entry map_field_methods[] = {
   PHP_ME(MapField, __construct,  NULL,              ZEND_ACC_PUBLIC)
@@ -207,25 +247,112 @@ static void map_field_init() {
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->free_obj = map_field_free;
   h->get_gc = map_field_get_gc;
-  //h->write_dimension = map_field_write_dimension;
+}
+
+// -----------------------------------------------------------------------------
+// MapFieldIter
+// -----------------------------------------------------------------------------
+//
+typedef struct MapFieldIter {
+  zend_object std;
+  // TODO(haberman): does this need to be a zval so it's GC-rooted?
+  MapField* map_field;
+  size_t position;
+} MapFieldIter;
+
+zend_class_entry *map_field_iter_ce;
+static zend_object_handlers map_field_iter_object_handlers;
+
+/**
+ * Object handler to create a MapFieldIter.
+ */
+zend_object* map_field_iter_create(zend_class_entry *class_type) {
+  MapFieldIter *intern = emalloc(sizeof(MapFieldIter));
+  zend_object_std_init(&intern->std, class_type);
+  intern->std.handlers = &map_field_iter_object_handlers;
+  intern->map_field = NULL;
+  intern->position = 0;
+  // Skip object_properties_init(), we don't allow derived classes.
+  return &intern->std;
+}
+
+static void MapFieldIter_make(zval *val, zval *map_field) {
+  MapFieldIter *iter;
+  ZVAL_OBJ(val, map_field_iter_ce->create_object(map_field_iter_ce));
+  iter = (MapFieldIter*)Z_OBJ_P(val);
+  iter->map_field = (MapField*)Z_OBJ_P(map_field);
+}
+
+// -----------------------------------------------------------------------------
+// PHP MapFieldIter Methods
+// -----------------------------------------------------------------------------
+
+PHP_METHOD(MapFieldIter, rewind) {
+  MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
+  MapField *map_field = intern->map_field;
+  intern->position = UPB_MAP_BEGIN;
+  upb_mapiter_next(map_field->map, &intern->position);
+}
+
+PHP_METHOD(MapFieldIter, current) {
+  MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
+  MapField *map_field = intern->map_field;
+  upb_msgval upb_val = upb_mapiter_value(map_field->map, intern->position);
+  zval ret;
+  pbphp_tozval(upb_val, &ret, map_field->value_type, map_field->klass);
+  RETURN_ZVAL(&ret, 0, 1);
+}
+
+PHP_METHOD(MapFieldIter, key) {
+  MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
+  MapField *map_field = intern->map_field;
+  upb_msgval upb_key = upb_mapiter_key(map_field->map, intern->position);
+  zval ret;
+  pbphp_tozval(upb_key, &ret, map_field->value_type, NULL);
+  RETURN_ZVAL(&ret, 0, 1);
+}
+
+PHP_METHOD(MapFieldIter, next) {
+  MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
+  upb_mapiter_next(intern->map_field->map, &intern->position);
+}
+
+PHP_METHOD(MapFieldIter, valid) {
+  MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
+  bool done = upb_mapiter_done(intern->map_field->map, intern->position);
+  RETURN_BOOL(!done);
+}
+
+static zend_function_entry map_field_iter_methods[] = {
+  PHP_ME(MapFieldIter, rewind,      arginfo_void, ZEND_ACC_PUBLIC)
+  PHP_ME(MapFieldIter, current,     arginfo_void, ZEND_ACC_PUBLIC)
+  PHP_ME(MapFieldIter, key,         arginfo_void, ZEND_ACC_PUBLIC)
+  PHP_ME(MapFieldIter, next,        arginfo_void, ZEND_ACC_PUBLIC)
+  PHP_ME(MapFieldIter, valid,       arginfo_void, ZEND_ACC_PUBLIC)
+  ZEND_FE_END
+};
+
+static void map_field_iter_init() {
+  zend_class_entry tmp_ce;
+  zend_object_handlers *h = &map_field_iter_object_handlers;
+
+  // TODO(haberman): see if we can mark this final, for robustness.
+  INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\MapFieldIter",
+                   map_field_iter_methods);
+
+  map_field_iter_ce = zend_register_internal_class(&tmp_ce);
+  zend_class_implements(map_field_iter_ce, 1, zend_ce_iterator);
+  map_field_iter_ce->create_object = map_field_iter_create;
+
+  memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
 }
 
 void map_module_init() {
   map_field_init();
+  map_field_iter_init();
 }
+
 #if 0
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetGet, 0, 0, 1)
-  ZEND_ARG_INFO(0, index)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetSet, 0, 0, 2)
-  ZEND_ARG_INFO(0, index)
-  ZEND_ARG_INFO(0, newval)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO(arginfo_void, 0)
-ZEND_END_ARG_INFO()
 
 // Utilities
 

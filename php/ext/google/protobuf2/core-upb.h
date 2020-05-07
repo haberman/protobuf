@@ -1226,7 +1226,7 @@ UPB_INLINE bool _upb_map_get(const upb_map *map, const void *key,
   upb_value tabval;
   upb_strview k = _upb_map_tokey(key, key_size);
   bool ret = upb_strtable_lookup2(&map->table, k.data, k.size, &tabval);
-  if (ret) {
+  if (ret && val) {
     _upb_map_fromvalue(tabval, val, val_size);
   }
   return ret;
@@ -1237,8 +1237,8 @@ UPB_INLINE void* _upb_map_next(const upb_map *map, size_t *iter) {
   it.t = &map->table;
   it.index = *iter;
   upb_strtable_next(&it);
-  if (upb_strtable_done(&it)) return NULL;
   *iter = it.index;
+  if (upb_strtable_done(&it)) return NULL;
   return (void*)str_tabent(&it);
 }
 
@@ -3559,6 +3559,11 @@ bool upb_map_delete(upb_map *map, upb_msgval key);
 
 /* Advances to the next entry.  Returns false if no more entries are present. */
 bool upb_mapiter_next(const upb_map *map, size_t *iter);
+
+/* Returns true if the iterator still points to a valid entry, or false if the
+ * iterator is past the last element. It is an error to call this function with
+ * UPB_MAP_BEGIN (you must call next() at least once first). */
+bool upb_mapiter_done(const upb_map *map, size_t iter);
 
 /* Returns the key and value for this entry of the map. */
 upb_msgval upb_mapiter_key(const upb_map *map, size_t iter);

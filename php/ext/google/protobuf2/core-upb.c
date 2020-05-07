@@ -1,5 +1,5 @@
 /* Amalgamated source file */
-#include "lite-upb.h"
+#include "core-upb.h"
 /*
 * This is where we define macros used across upb.
 *
@@ -1595,7 +1595,7 @@ static bool rm(upb_table *t, lookupkey_t key, upb_value *val,
 static size_t next(const upb_table *t, size_t i) {
   do {
     if (++i >= upb_table_size(t))
-      return SIZE_MAX;
+      return SIZE_MAX - 1;  /* Distinct from -1. */
   } while(upb_tabent_isempty(&t->entries[i]));
 
   return i;
@@ -5414,6 +5414,14 @@ bool upb_mapiter_next(const upb_map *map, size_t *iter) {
   return _upb_map_next(map, iter);
 }
 
+bool upb_mapiter_done(const upb_map *map, size_t iter) {
+  UPB_ASSERT(iter != UPB_MAP_BEGIN);
+  upb_strtable_iter i;
+  i.t = &map->table;
+  i.index = iter;
+  return upb_strtable_done(&i);
+}
+
 /* Returns the key and value for this entry of the map. */
 upb_msgval upb_mapiter_key(const upb_map *map, size_t iter) {
   upb_strtable_iter i;
@@ -5862,7 +5870,9 @@ static upb_strview jsondec_string(jsondec *d) {
 
     switch (ch) {
       case '"': {
-        upb_strview ret = {buf, end - buf};
+        upb_strview ret;
+        ret.data = buf;
+        ret.size = end - buf;
         return ret;
       }
       case '\\':
@@ -5870,7 +5880,7 @@ static upb_strview jsondec_string(jsondec *d) {
         if (*d->ptr == 'u') {
           d->ptr++;
           if (buf_end - end < 4) {
-            // Allow space for maximum-sized code point (4 bytes).
+            /* Allow space for maximum-sized code point (4 bytes). */
             jsondec_resize(d, &buf, &end, &buf_end);
           }
           end += jsondec_unicode(d, end);
@@ -6771,10 +6781,10 @@ static void jsondec_any(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
   if (pre_type_data) {
     size_t len = pre_type_end - pre_type_data + 1;
     char *tmp = upb_arena_malloc(d->arena, len);
-    memcpy(tmp, pre_type_data, len - 1);
-    tmp[len - 1] = '}';
     const char *saved_ptr = d->ptr;
     const char *saved_end = d->end;
+    memcpy(tmp, pre_type_data, len - 1);
+    tmp[len - 1] = '}';
     d->ptr = tmp;
     d->end = tmp + len;
     d->is_first = true;

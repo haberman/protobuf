@@ -17,7 +17,7 @@ static const zend_module_dep protobuf_deps[] = {
 static PHP_MINIT_FUNCTION(protobuf) {
   arena_module_init();
   array_module_init();
-  //map_module_init();
+  map_module_init();
   return 0;
 }
 

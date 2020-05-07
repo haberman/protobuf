@@ -37,7 +37,7 @@
 
 #include "arena.h"
 #include "convert.h"
-#include "lite-upb.h"
+#include "core-upb.h"
 
 static void RepeatedFieldIter_make(zval *val, zval *repeated_field);
 
@@ -90,7 +90,7 @@ static HashTable *repeated_field_get_gc(zval *object, zval **table, int *n) {
 /**
  * Constructs an instance of RepeatedField.
  * @param long Type of the stored element.
- * @param string Message/Enum class name (message/enum fields only).
+ * @param string Message/Enum class.
  */
 PHP_METHOD(RepeatedField, __construct) {
   RepeatedField *intern = (RepeatedField*)Z_OBJ_P(getThis());
@@ -108,11 +108,9 @@ PHP_METHOD(RepeatedField, __construct) {
 
   if (intern->type == UPB_TYPE_MESSAGE && klass == NULL) {
     php_error_docref(NULL, E_USER_ERROR,
-                     "Message type must have concrete class.");
+                     "Message/enum type must have concrete class.");
     return;
   }
-
-  // TODO(teboring): Consider enum.
 }
 
 /**
@@ -186,21 +184,25 @@ PHP_METHOD(RepeatedField, offsetGet) {
  * @exception Non-existing index.
  * @exception Incorrect type of the element.
  */
-static void repeated_field_write_dimension(zval *object, zval *offset,
-                                           zval *value) {
-  RepeatedField *intern = (RepeatedField*)Z_OBJ_P(object);
+PHP_METHOD(RepeatedField, offsetSet) {
+  RepeatedField *intern = (RepeatedField*)Z_OBJ_P(getThis());
   upb_arena *arena = arena_get(&intern->arena);
+  size_t size = upb_array_size(intern->array);
+  zval *offset, *val;
   int64_t index;
   upb_msgval msgval;
-  size_t size = upb_array_size(intern->array);
 
-  if (!offset || Z_TYPE_P(offset) == IS_NULL) {
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "zz", &offset, &val) != SUCCESS) {
+    return;
+  }
+
+  if (Z_TYPE_P(offset) == IS_NULL) {
     index = size;
   } else if (!pbphp_toi64(offset, &index)) {
     return;
   }
 
-  if (!pbphp_tomsgval(value, &msgval, intern->type, intern->klass, arena)) {
+  if (!pbphp_tomsgval(val, &msgval, intern->type, intern->klass, arena)) {
     return;
   }
 
@@ -209,10 +211,6 @@ static void repeated_field_write_dimension(zval *object, zval *offset,
   } else {
     upb_array_set(intern->array, index, msgval);
   }
-}
-
-PHP_METHOD(RepeatedField, offsetSet) {
-  zend_error(E_USER_ERROR, "offsetSet is unreachable", index);
 }
 
 /**
@@ -309,7 +307,6 @@ static void repeated_field_init() {
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->free_obj = repeated_field_free;
   h->get_gc = repeated_field_get_gc;
-  h->write_dimension = repeated_field_write_dimension;
 }
 
 // -----------------------------------------------------------------------------

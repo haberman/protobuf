@@ -33,7 +33,7 @@
 
 #include <php.h>
 
-#include "lite-upb.h"
+#include "core-upb.h"
 
 void arena_module_init();
 

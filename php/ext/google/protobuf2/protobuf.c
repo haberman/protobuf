@@ -3,7 +3,16 @@
 
 #include "arena.h"
 #include "array.h"
+#include "def.h"
 #include "map.h"
+#include "message.h"
+
+ZEND_DECLARE_MODULE_GLOBALS(protobuf)
+
+ZEND_BEGIN_MODULE_GLOBALS(protobuf)
+  zend_bool keep_descriptor_pool_after_request;
+  zval generated_pool;
+ZEND_END_MODULE_GLOBALS(protobuf)
 
 zend_function_entry protobuf_functions[] = {
   ZEND_FE_END
@@ -17,7 +26,9 @@ static const zend_module_dep protobuf_deps[] = {
 static PHP_MINIT_FUNCTION(protobuf) {
   arena_module_init();
   array_module_init();
+  def_module_init();
   map_module_init();
+  message_module_init();
   return 0;
 }
 

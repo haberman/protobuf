@@ -33,7 +33,6 @@
 #include <Zend/zend_interfaces.h>
 
 #include "protobuf.h"
-#include "convert.h"
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_offsetGet, 0, 0, 1)
   ZEND_ARG_INFO(0, index)
@@ -76,8 +75,13 @@ static void repeated_field_write_dimension(zval *object, zval *offset,
                                            zval *value TSRMLS_DC);
 static HashTable *repeated_field_get_gc(zval *object, CACHED_VALUE **table,
                                         int *n TSRMLS_DC);
+#if PHP_MAJOR_VERSION < 7
+static zend_object_value repeated_field_create(zend_class_entry *ce TSRMLS_DC);
+static zend_object_value repeated_field_iter_create(zend_class_entry *ce TSRMLS_DC);
+#else
 static zend_object *repeated_field_create(zend_class_entry *ce TSRMLS_DC);
 static zend_object *repeated_field_iter_create(zend_class_entry *ce TSRMLS_DC);
+#endif
 
 // -----------------------------------------------------------------------------
 // RepeatedField creation/destruction
@@ -90,7 +94,11 @@ zend_object_handlers* repeated_field_iter_handlers;
 
 // Define object free method.
 PHP_PROTO_OBJECT_FREE_START(RepeatedField, repeated_field)
+#if PHP_MAJOR_VERSION < 7
+php_proto_zval_ptr_dtor(intern->array);
+#else
 php_proto_zval_ptr_dtor(&intern->array);
+#endif
 PHP_PROTO_OBJECT_FREE_END
 
 PHP_PROTO_OBJECT_EMPTY_DTOR_START(RepeatedField, repeated_field)
@@ -98,6 +106,9 @@ PHP_PROTO_OBJECT_DTOR_END
 
 // Define object create method.
 PHP_PROTO_OBJECT_CREATE_START(RepeatedField, repeated_field)
+#if PHP_MAJOR_VERSION < 7
+intern->array = NULL;
+#endif
 intern->type = 0;
 intern->msg_ce = NULL;
 PHP_PROTO_OBJECT_CREATE_END(RepeatedField, repeated_field)
@@ -112,6 +123,17 @@ repeated_field_handlers->get_gc = repeated_field_get_gc;
 PHP_PROTO_INIT_CLASS_END
 
 // Define array element free function.
+#if PHP_MAJOR_VERSION < 7
+static inline void php_proto_array_string_release(void *value) {
+  zval_ptr_dtor(value);
+}
+
+static inline void php_proto_array_object_release(void *value) {
+  zval_ptr_dtor(value);
+}
+static inline void php_proto_array_default_release(void *value) {
+}
+#else
 static inline void php_proto_array_string_release(zval *value) {
   void* ptr = Z_PTR_P(value);
   zend_string* object = *(zend_string**)ptr;
@@ -125,6 +147,7 @@ static void php_proto_array_default_release(zval* value) {
   void* ptr = Z_PTR_P(value);
   efree(ptr);
 }
+#endif
 
 static int repeated_field_array_init(zval *array, upb_fieldtype_t type,
                                      uint size ZEND_FILE_LINE_DC) {
@@ -188,7 +211,12 @@ static void repeated_field_write_dimension(zval *object, zval *offset,
   }
 }
 
+#if PHP_MAJOR_VERSION < 7
+static HashTable *repeated_field_get_gc(zval *object, zval ***table,
+                                        int *n TSRMLS_DC) {
+#else
 static HashTable *repeated_field_get_gc(zval *object, zval **table, int *n) {
+#endif
   *table = NULL;
   *n = 0;
   RepeatedField *intern = UNBOX(RepeatedField, object);
@@ -235,6 +263,9 @@ void repeated_field_ensure_created(
     CACHED_VALUE *repeated_field PHP_PROTO_TSRMLS_DC) {
   if (ZVAL_IS_NULL(CACHED_PTR_TO_ZVAL_PTR(repeated_field))) {
     zval_ptr_dtor(repeated_field);
+#if PHP_MAJOR_VERSION < 7
+    MAKE_STD_ZVAL(CACHED_PTR_TO_ZVAL_PTR(repeated_field));
+#endif
     repeated_field_create_with_field(repeated_field_type, field,
                                      repeated_field PHP_PROTO_TSRMLS_CC);
   }
@@ -259,7 +290,12 @@ void repeated_field_create_with_type(
       UNBOX(RepeatedField, CACHED_TO_ZVAL_PTR(*repeated_field));
   intern->type = type;
   intern->msg_ce = msg_ce;
+#if PHP_MAJOR_VERSION < 7
+  MAKE_STD_ZVAL(intern->array);
+  repeated_field_array_init(intern->array, intern->type, 0 ZEND_FILE_LINE_CC);
+#else
   repeated_field_array_init(&intern->array, intern->type, 0 ZEND_FILE_LINE_CC);
+#endif
 
   // TODO(teboring): Link class entry for message and enum
 }
@@ -287,7 +323,12 @@ PHP_METHOD(RepeatedField, __construct) {
   intern->type = to_fieldtype(type);
   intern->msg_ce = klass;
 
+#if PHP_MAJOR_VERSION < 7
+  MAKE_STD_ZVAL(intern->array);
+  repeated_field_array_init(intern->array, intern->type, 0 ZEND_FILE_LINE_CC);
+#else
   repeated_field_array_init(&intern->array, intern->type, 0 ZEND_FILE_LINE_CC);
+#endif
 
   if (intern->type == UPB_TYPE_MESSAGE && klass == NULL) {
     zend_error(E_USER_ERROR, "Message type must have concrete class.");

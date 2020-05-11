@@ -2,6 +2,8 @@
 
 set -ex
 
+cd `dirname $0`
+
 PHP_BASE=$1
 PHP=$PHP_BASE/bin/php
 

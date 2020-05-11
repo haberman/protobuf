@@ -37,7 +37,7 @@
 
 #include "arena.h"
 #include "convert.h"
-#include "core-upb.h"
+#include "php-upb.h"
 
 static void RepeatedFieldIter_make(zval *val, zval *repeated_field);
 
@@ -45,7 +45,7 @@ static void RepeatedFieldIter_make(zval *val, zval *repeated_field);
 // RepeatedField
 // -----------------------------------------------------------------------------
 
-typedef struct RepeatedField {
+typedef struct {
   zend_object std;
   zval arena;
   upb_array *array;
@@ -71,7 +71,7 @@ static zend_object* repeated_field_create(zend_class_entry *class_type) {
 /**
  * Object handler to free a RepeatedField.
  */
-static void repeated_field_free(zend_object* obj) {
+static void repeated_field_dtor(zend_object* obj) {
   RepeatedField* intern = (RepeatedField*)obj;
   zval_ptr_dtor(&intern->arena);
   zend_object_std_dtor(&intern->std);
@@ -97,8 +97,7 @@ PHP_METHOD(RepeatedField, __construct) {
   zend_long type;
   zend_class_entry* klass = NULL;
 
-  if (zend_parse_parameters(ZEND_NUM_ARGS(), "l|C", &type, &klass) ==
-      FAILURE) {
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "l|C", &type, &klass) != SUCCESS) {
     return;
   }
 
@@ -305,7 +304,7 @@ static void repeated_field_init() {
   repeated_field_ce->create_object = repeated_field_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
-  h->free_obj = repeated_field_free;
+  h->dtor_obj = repeated_field_dtor;
   h->get_gc = repeated_field_get_gc;
 }
 
@@ -313,7 +312,7 @@ static void repeated_field_init() {
 // PHP RepeatedFieldIter
 // -----------------------------------------------------------------------------
 
-typedef struct RepeatedFieldIter {
+typedef struct {
   zend_object std;
   // TODO(haberman): does this need to be a zval so it's GC-rooted?
   RepeatedField* repeated_field;

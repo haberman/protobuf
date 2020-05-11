@@ -1,7 +1,7 @@
 
 #include <Zend/zend_API.h>
 
-#include "core-upb.h"
+#include "php-upb.h"
 
 typedef struct Arena {
   zend_object std;

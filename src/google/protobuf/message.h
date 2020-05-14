@@ -740,8 +740,7 @@ class PROTOBUF_EXPORT Reflection final {
   // long as the message is not destroyed.
   //
   // Note that to use this method users need to include the header file
-  // "net/proto2/public/reflection.h" (which defines the RepeatedFieldRef
-  // class templates).
+  // "reflection.h" (which defines the RepeatedFieldRef class templates).
   template <typename T>
   RepeatedFieldRef<T> GetRepeatedFieldRef(const Message& message,
                                           const FieldDescriptor* field) const;
@@ -911,6 +910,22 @@ class PROTOBUF_EXPORT Reflection final {
   // the RepeatedFieldAccessor interface.
   const internal::RepeatedFieldAccessor* RepeatedFieldAccessor(
       const FieldDescriptor* field) const;
+
+  // Lists all fields of the message which are currently set, except for unknown
+  // fields and stripped fields. See ListFields for details.
+  void ListFieldsOmitStripped(
+      const Message& message,
+      std::vector<const FieldDescriptor*>* output) const;
+
+  bool IsMessageStripped(const Descriptor* descriptor) const {
+    return schema_.IsMessageStripped(descriptor);
+  }
+
+  friend class TextFormat;
+
+  void ListFieldsMayFailOnStripped(
+      const Message& message, bool should_fail,
+      std::vector<const FieldDescriptor*>* output) const;
 
   const Descriptor* const descriptor_;
   const internal::ReflectionSchema schema_;

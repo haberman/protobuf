@@ -163,10 +163,13 @@ build_golang() {
 
   export GOPATH="$HOME/gocode"
   mkdir -p "$GOPATH/src/github.com/protocolbuffers"
+  mkdir -p "$GOPATH/src/github.com/golang"
   rm -f "$GOPATH/src/github.com/protocolbuffers/protobuf"
+  rm -f "$GOPATH/src/github.com/golang/protobuf"
   ln -s "`pwd`" "$GOPATH/src/github.com/protocolbuffers/protobuf"
   export PATH="$GOPATH/bin:$PATH"
-  go get github.com/golang/protobuf/protoc-gen-go
+  (cd $GOPATH/src/github.com/golang && git clone https://github.com/golang/protobuf.git && cd protobuf && git checkout v1.3.5)
+  go install github.com/golang/protobuf/protoc-gen-go
 
   cd examples && PROTO_PATH="-I../src -I." make gotest && cd ..
 }
@@ -443,6 +446,13 @@ build_ruby27() {
 
 build_javascript() {
   internal_build_cpp
+  NODE_VERSION=node-v12.16.3-darwin-x64
+  NODE_TGZ="$NODE_VERSION.tar.gz"
+  pushd /tmp
+  curl -OL https://nodejs.org/dist/v12.16.3/$NODE_TGZ
+  tar zxvf $NODE_TGZ
+  export PATH=$PATH:`pwd`/$NODE_VERSION/bin
+  popd
   cd js && npm install && npm test && cd ..
   cd conformance && make test_nodejs && cd ..
 }
@@ -528,23 +538,146 @@ build_php5.6() {
   popd
 }
 
-build_php7.0() {
+<<<<<<< HEAD
+=======
+build_php5.6_c() {
+  IS_64BIT=$1
+  use_php 5.6
+  cd php/tests && /bin/bash ./test.sh 5.6 && cd ../..
+  pushd conformance
+  if [ "$IS_64BIT" = "true" ]
+  then
+    make test_php_c
+  else
+    make test_php_c_32
+  fi
+  popd
+}
+
+build_php5.6_mixed() {
+  use_php 5.6
+  pushd php
+  rm -rf vendor
+  composer update
+  pushd tests
+  /bin/bash ./compile_extension.sh 5.6
+  popd
+  php -dextension=./ext/google/protobuf/modules/protobuf.so ./vendor/bin/phpunit
+  popd
+}
+
+build_php5.6_zts_c() {
+  IS_64BIT=$1
+  use_php_zts 5.6
+  cd php/tests && /bin/bash ./test.sh 5.6-zts && cd ../..
+  pushd conformance
+  if [ "$IS_64BIT" = "true" ]
+  then
+    make test_php_c
+  else
+    make test_php_c_32
+  fi
+  popd
+}
+
+build_php5.6_mac() {
+  generate_php_test_proto
+  # Install PHP
+  curl -s https://php-osx.liip.ch/install.sh | bash -s 5.6
+  PHP_FOLDER=`find /usr/local -type d -name "php5-5.6*"`  # The folder name may change upon time
+  test ! -z "$PHP_FOLDER"
+  export PATH="$PHP_FOLDER/bin:$PATH"
+
+  # Install phpunit
+  curl https://phar.phpunit.de/phpunit-5.6.8.phar -L -o phpunit.phar
+  chmod +x phpunit.phar
+  sudo mv phpunit.phar /usr/local/bin/phpunit
+
+  # Install valgrind
+  echo "#! /bin/bash" > valgrind
+  chmod ug+x valgrind
+  sudo mv valgrind /usr/local/bin/valgrind
+
+  # Test
+  cd php/tests && /bin/bash ./test.sh && cd ../..
+  pushd conformance
+  make test_php_c
+  popd
+}
+
+build_php7.0_c() {
+  IS_64BIT=$1
+  use_php 7.0
+  cd php/tests && /bin/bash ./test.sh 7.0 && cd ../..
+  pushd conformance
+  if [ "$IS_64BIT" = "true" ]
+  then
+    make test_php_c
+  else
+    make test_php_c_32
+  fi
+  popd
+}
+
+build_php7.0_mixed() {
   use_php 7.0
   pushd php
   rm -rf vendor
   composer update
-  ./vendor/bin/phpunit
+  pushd tests
+  /bin/bash ./compile_extension.sh 7.0
   popd
-  pushd conformance
-  make test_php
+  php -dextension=./ext/google/protobuf/modules/protobuf.so ./vendor/bin/phpunit
   popd
 }
 
-build_php7.4_mac() {
+build_php7.0_zts_c() {
+  IS_64BIT=$1
+  use_php_zts 7.0
+  cd php/tests && /bin/bash ./test.sh 7.0-zts && cd ../..
+  pushd conformance
+  if [ "$IS_64BIT" = "true" ]
+  then
+    make test_php_c
+  else
+    make test_php_c_32
+  fi
+  popd
+}
+
+build_php7.0_mac() {
   generate_php_test_proto
   # Install PHP
-  curl -s https://php-osx.liip.ch/install.sh | bash -s 7.4
-  PHP_FOLDER=`find /usr/local -type d -name "php7-7.4*"`  # The folder name may change upon time
+  curl -s https://php-osx.liip.ch/install.sh | bash -s 7.0
+  PHP_FOLDER=`find /usr/local -type d -name "php5-7.0*"`  # The folder name may change upon time
+  test ! -z "$PHP_FOLDER"
+  export PATH="$PHP_FOLDER/bin:$PATH"
+
+  # Install phpunit
+  curl https://phar.phpunit.de/phpunit-5.6.0.phar -L -o phpunit.phar
+  chmod +x phpunit.phar
+  sudo mv phpunit.phar /usr/local/bin/phpunit
+
+  # Install valgrind
+  echo "#! /bin/bash" > valgrind
+  chmod ug+x valgrind
+  sudo mv valgrind /usr/local/bin/valgrind
+
+  # Test
+  cd php/tests && /bin/bash ./test.sh && cd ../..
+  pushd conformance
+  make test_php_c
+  popd
+}
+
+build_php7.3_mac() {
+  generate_php_test_proto
+  # Install PHP
+  # We can't test PHP 7.4 with these binaries yet:
+  #   https://github.com/liip/php-osx/issues/276
+  curl -s https://php-osx.liip.ch/install.sh | bash -s 7.3
+  PHP_FOLDER=`find /usr/local -type d -name "php5-7.3*"`  # The folder name may change upon time
+  test ! -z "$PHP_FOLDER"
   export PATH="$PHP_FOLDER/bin:$PATH"
 
   # Install phpunit

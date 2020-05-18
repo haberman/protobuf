@@ -1,0 +1,190 @@
+
+#include "names.h"
+
+#include <stdlib.h>
+
+#include "protobuf.h"
+
+/* stringsink *****************************************************************/
+
+typedef struct {
+  char *ptr;
+  size_t len, size;
+} stringsink;
+
+static void *stringsink_start(void *_sink, const void *hd, size_t size_hint) {
+  stringsink *sink = _sink;
+  sink->len = 0;
+  return sink;
+}
+
+size_t stringsink_string(stringsink *sink, const char *ptr, size_t len) {
+  size_t new_size = sink->size;
+
+  while (sink->len + len > new_size) {
+    new_size *= 2;
+  }
+
+  if (new_size != sink->size) {
+    sink->ptr = realloc(sink->ptr, new_size);
+    sink->size = new_size;
+  }
+
+  memcpy(sink->ptr + sink->len, ptr, len);
+  sink->len += len;
+
+  return len;
+}
+
+void stringsink_init(stringsink *sink) {
+  sink->size = 32;
+  sink->ptr = malloc(sink->size);
+  PBPHP_ASSERT(sink->ptr != NULL);
+  sink->len = 0;
+}
+
+void stringsink_uninit(stringsink *sink) { free(sink->ptr); }
+
+void stringsink_uninit_opaque(void *sink) { stringsink_uninit(sink); }
+
+const char *const kReservedNames[] = {
+    "abstract",   "and",        "array",        "as",           "break",
+    "callable",   "case",       "catch",        "class",        "clone",
+    "const",      "continue",   "declare",      "default",      "die",
+    "do",         "echo",       "else",         "elseif",       "empty",
+    "enddeclare", "endfor",     "endforeach",   "endif",        "endswitch",
+    "endwhile",   "eval",       "exit",         "extends",      "final",
+    "for",        "foreach",    "function",     "global",       "goto",
+    "if",         "implements", "include",      "include_once", "instanceof",
+    "insteadof",  "interface",  "isset",        "list",         "namespace",
+    "new",        "or",         "print",        "private",      "protected",
+    "public",     "require",    "require_once", "return",       "static",
+    "switch",     "throw",      "trait",        "try",          "unset",
+    "use",        "var",        "while",        "xor",          "int",
+    "float",      "bool",       "string",       "true",         "false",
+    "null",       "void",       "iterable"};
+const int kReservedNamesSize = 73;
+
+bool is_reserved_name(const char* name) {
+  for (int i = 0; i < kReservedNamesSize; i++) {
+    if (strcmp(kReservedNames[i], name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool is_reserved(const char *segment, int length) {
+  bool result;
+  char* lower = malloc(length + 1);
+  memset(lower, 0, length + 1);
+  memcpy(lower, segment, length);
+  int i = 0;
+  while(lower[i]) {
+    lower[i] = (char)tolower(lower[i]);
+    i++;
+  }
+  lower[length] = 0;
+  result = is_reserved_name(lower);
+  free(lower);
+  return result;
+}
+
+static void fill_prefix(const char *segment, int length,
+                        const char *prefix_given,
+                        const char *package_name,
+                        stringsink *classname) {
+  if (prefix_given != NULL && strcmp(prefix_given, "") != 0) {
+    stringsink_string(classname, prefix_given, strlen(prefix_given));
+  } else {
+    if (is_reserved(segment, length)) {
+      if (package_name != NULL &&
+          strcmp("google.protobuf", package_name) == 0) {
+        stringsink_string(classname, "GPB", 3);
+      } else {
+        stringsink_string(classname, "PB", 2);
+      }
+    }
+  }
+}
+
+static void fill_segment(const char *segment, int length,
+                         stringsink *classname, bool use_camel) {
+  if (use_camel && (segment[0] < 'A' || segment[0] > 'Z')) {
+    char first = segment[0] + ('A' - 'a');
+    stringsink_string(classname, &first, 1);
+    stringsink_string(classname, segment + 1, length - 1);
+  } else {
+    stringsink_string(classname, segment, length);
+  }
+}
+
+static void fill_namespace(const char *package, const char *php_namespace,
+                           stringsink *classname) {
+  if (php_namespace != NULL) {
+    if (strlen(php_namespace) != 0) {
+      stringsink_string(classname, php_namespace, strlen(php_namespace));
+      stringsink_string(classname, "\\", 1);
+    }
+  } else if (package != NULL) {
+    int i = 0, j = 0;
+    size_t package_len = strlen(package);
+    while (i < package_len) {
+      j = i;
+      while (j < package_len && package[j] != '.') {
+        j++;
+      }
+      fill_prefix(package + i, j - i, "", package, classname);
+      fill_segment(package + i, j - i, classname, true);
+      stringsink_string(classname, "\\", 1);
+      i = j + 1;
+    }
+  }
+}
+
+static void fill_classname(const char *fullname,
+                           const char *package,
+                           const char *prefix,
+                           stringsink *classname) {
+  int classname_start = 0;
+  if (package != NULL) {
+    size_t package_len = strlen(package);
+    classname_start = package_len == 0 ? 0 : package_len + 1;
+  }
+  size_t fullname_len = strlen(fullname);
+  bool is_first_segment = true;
+
+  int i = classname_start, j;
+  while (i < fullname_len) {
+    j = i;
+    while (j < fullname_len && fullname[j] != '.') {
+      j++;
+    }
+    fill_prefix(fullname + i, j - i, prefix, package, classname);
+    is_first_segment = false;
+    fill_segment(fullname + i, j - i, classname, false);
+    if (j != fullname_len) {
+      stringsink_string(classname, "\\", 1);
+    }
+    i = j + 1;
+  }
+}
+
+const char *pbphp_get_classname(const upb_filedef *file, const char *fullname) {
+  // Prepend '.' to package name to make it absolute. In the 5 additional
+  // bytes allocated, one for '.', one for trailing 0, and 3 for 'GPB' if
+  // given message is google.protobuf.Empty.
+  const char *package = upb_filedef_package(file);
+  const char *php_namespace = upb_filedef_phpnamespace(file);
+  const char *prefix = upb_filedef_phpprefix(file);
+  const char *ret;
+  stringsink namesink;
+  stringsink_init(&namesink);
+
+  fill_namespace(package, php_namespace, &namesink);
+  fill_classname(fullname, package, prefix, &namesink);
+  stringsink_string(&namesink, "\0", 1);
+  ret = strdup(namesink.ptr);
+  stringsink_uninit(&namesink);
+  return ret;
+}

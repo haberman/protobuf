@@ -37,7 +37,9 @@
 
 #include "arena.h"
 #include "convert.h"
+#include "def.h"
 #include "php-upb.h"
+#include "protobuf.h"
 
 static void RepeatedFieldIter_make(zval *val, zval *repeated_field);
 
@@ -50,7 +52,7 @@ typedef struct {
   zval arena;
   upb_array *array;
   upb_fieldtype_t type;
-  const zend_class_entry* klass;  // class entry for value message
+  const Descriptor* desc;  // When values are messages.
 } RepeatedField;
 
 zend_class_entry *repeated_field_ce;
@@ -64,6 +66,8 @@ static zend_object* repeated_field_create(zend_class_entry *class_type) {
   zend_object_std_init(&intern->std, class_type);
   intern->std.handlers = &repeated_field_object_handlers;
   arena_init(&intern->arena);
+  intern->array = NULL;
+  intern->desc = NULL;
   // Skip object_properties_init(), we don't allow derived classes.
   return &intern->std;
 }
@@ -73,18 +77,9 @@ static zend_object* repeated_field_create(zend_class_entry *class_type) {
  */
 static void repeated_field_dtor(zend_object* obj) {
   RepeatedField* intern = (RepeatedField*)obj;
+  pbphp_cachedel(intern->array);
   zval_ptr_dtor(&intern->arena);
   zend_object_std_dtor(&intern->std);
-}
-
-/**
- * Object handler to get GC references.
- */
-static HashTable *repeated_field_get_gc(zval *object, zval **table, int *n) {
-  RepeatedField *intern = (RepeatedField*)Z_OBJ_P(object);
-  *table = &intern->arena;
-  *n = 1;
-  return NULL;
 }
 
 /**
@@ -94,6 +89,7 @@ static HashTable *repeated_field_get_gc(zval *object, zval **table, int *n) {
  */
 PHP_METHOD(RepeatedField, __construct) {
   RepeatedField *intern = (RepeatedField*)Z_OBJ_P(getThis());
+  upb_arena *arena = arena_get(&intern->arena);
   zend_long type;
   zend_class_entry* klass = NULL;
 
@@ -102,14 +98,16 @@ PHP_METHOD(RepeatedField, __construct) {
   }
 
   intern->type = pbphp_dtype_to_type(type);
-  intern->klass = klass;
-  intern->array = upb_array_new(arena_get(&intern->arena), intern->type);
+  intern->desc = pupb_getdesc(klass);
 
   if (intern->type == UPB_TYPE_MESSAGE && klass == NULL) {
     php_error_docref(NULL, E_USER_ERROR,
                      "Message/enum type must have concrete class.");
     return;
   }
+
+  intern->array = upb_array_new(arena, intern->type);
+  pbphp_cacheadd(intern->array, &intern->std);
 }
 
 /**
@@ -123,11 +121,11 @@ PHP_METHOD(RepeatedField, append) {
   upb_msgval msgval;
 
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &php_val) != SUCCESS ||
-      !pbphp_tomsgval(php_val, &msgval, intern->type, intern->klass, arena)) {
+      !pbphp_tomsgval(php_val, &msgval, intern->type, intern->desc, arena)) {
     return;
   }
 
-  upb_array_append(intern->array, msgval, arena_get(&intern->arena));
+  upb_array_append(intern->array, msgval, arena);
 }
 
 /**
@@ -156,6 +154,7 @@ PHP_METHOD(RepeatedField, offsetExists) {
  */
 PHP_METHOD(RepeatedField, offsetGet) {
   RepeatedField *intern = (RepeatedField*)Z_OBJ_P(getThis());
+  upb_arena *arena = arena_get(&intern->arena);
   zend_long index;
   upb_msgval msgval;
   zval ret;
@@ -170,7 +169,7 @@ PHP_METHOD(RepeatedField, offsetGet) {
   }
 
   msgval = upb_array_get(intern->array, index);
-  pbphp_tozval(msgval, &ret, intern->type, intern->klass);
+  pbphp_tozval(msgval, &ret, intern->type, intern->desc, &intern->arena);
   RETURN_ZVAL(&ret, 0, 1);
 }
 
@@ -201,7 +200,7 @@ PHP_METHOD(RepeatedField, offsetSet) {
     return;
   }
 
-  if (!pbphp_tomsgval(val, &msgval, intern->type, intern->klass, arena)) {
+  if (!pbphp_tomsgval(val, &msgval, intern->type, intern->desc, arena)) {
     return;
   }
 
@@ -294,18 +293,17 @@ static void repeated_field_init() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h = &repeated_field_object_handlers;
 
-  // TODO(haberman): see if we can mark this final, for robustness.
   INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\RepeatedField",
                    repeated_field_methods);
 
   repeated_field_ce = zend_register_internal_class(&tmp_ce);
   zend_class_implements(repeated_field_ce, 3, spl_ce_ArrayAccess,
                         zend_ce_aggregate, spl_ce_Countable);
+  repeated_field_ce->ce_flags |= ZEND_ACC_FINAL;
   repeated_field_ce->create_object = repeated_field_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->dtor_obj = repeated_field_dtor;
-  h->get_gc = repeated_field_get_gc;
 }
 
 // -----------------------------------------------------------------------------
@@ -350,6 +348,7 @@ PHP_METHOD(RepeatedFieldIter, rewind) {
 PHP_METHOD(RepeatedFieldIter, current) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   RepeatedField* field = intern->repeated_field;
+  upb_arena *arena = arena_get(&field->arena);
   upb_array *array = field->array;
   zend_long index = intern->position;
   upb_msgval msgval;
@@ -360,7 +359,8 @@ PHP_METHOD(RepeatedFieldIter, current) {
   }
 
   msgval = upb_array_get(array, index);
-  pbphp_tozval(msgval, &ret, field->type, field->klass);
+
+  pbphp_tozval(msgval, &ret, field->type, field->desc, &field->arena);
   RETURN_ZVAL(&ret, 0, 1);
 }
 
@@ -392,12 +392,12 @@ static void repeated_field_iter_init() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h = &repeated_field_iter_object_handlers;
 
-  // TODO(haberman): see if we can mark this final, for robustness.
   INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\RepeatedFieldIter",
                    repeated_field_iter_methods);
 
   repeated_field_iter_ce = zend_register_internal_class(&tmp_ce);
   zend_class_implements(repeated_field_iter_ce, 1, zend_ce_iterator);
+  repeated_field_iter_ce->ce_flags |= ZEND_ACC_FINAL;
   repeated_field_iter_ce->create_object = repeated_field_iter_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));

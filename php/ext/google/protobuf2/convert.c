@@ -30,7 +30,63 @@
 
 #include "convert.h"
 
+#include "message.h"
 #include "php-upb.h"
+#include "protobuf.h"
+
+// -----------------------------------------------------------------------------
+// GPBUtil
+// -----------------------------------------------------------------------------
+
+static zend_class_entry* gpb_util_ce;
+
+// The implementation of type checking for primitive fields is empty. This is
+// because type checking is done when direct assigning message fields (e.g.,
+// foo->a = 1). Functions defined here are place holders in generated code for
+// pure PHP implementation (c extension and pure PHP share the same generated
+// code).
+
+PHP_METHOD(Util, checkInt32) {}
+PHP_METHOD(Util, checkUint32) {}
+PHP_METHOD(Util, checkInt64) {}
+PHP_METHOD(Util, checkUint64) {}
+PHP_METHOD(Util, checkEnum) {}
+PHP_METHOD(Util, checkFloat) {}
+PHP_METHOD(Util, checkDouble) {}
+PHP_METHOD(Util, checkBool) {}
+PHP_METHOD(Util, checkString) {}
+PHP_METHOD(Util, checkBytes) {}
+PHP_METHOD(Util, checkMessage) {}
+PHP_METHOD(Util, checkMapField) {}
+PHP_METHOD(Util, checkRepeatedField) {}
+
+static zend_function_entry util_methods[] = {
+  PHP_ME(Util, checkInt32,  NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkUint32, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkInt64,  NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkUint64, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkEnum,   NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkFloat,  NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkDouble, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkBool,   NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkString, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkBytes,  NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkMessage, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkMapField, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  PHP_ME(Util, checkRepeatedField, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+  ZEND_FE_END
+};
+
+void util_init() {
+  zend_class_entry class_type;
+  INIT_CLASS_ENTRY(class_type, "Google\\Protobuf\\Internal\\GPBUtil",
+                   util_methods);
+  gpb_util_ce = zend_register_internal_class(&class_type);
+}
+
+// -----------------------------------------------------------------------------
+// Conversion functions used from C
+// -----------------------------------------------------------------------------
 
 upb_fieldtype_t pbphp_dtype_to_type(upb_descriptortype_t type) {
   switch (type) {
@@ -156,7 +212,7 @@ static bool to_string(zval* from) {
 }
 
 bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
-                    const zend_class_entry *klass, upb_arena *arena) {
+                    const Descriptor *desc, upb_arena *arena) {
   int64_t i64;
 
   switch (type) {
@@ -211,15 +267,15 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
       return true;
     }
     case UPB_TYPE_MESSAGE:
-      php_error_docref(NULL, E_USER_ERROR, "NYI");
-      return false;
+      upb_val->msg_val = pbphp_tomsg(php_val, desc, arena);
+      return upb_val->msg_val != NULL;
   }
 
   return false;
 }
 
 void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
-                  const zend_class_entry *klass) {
+                  const Descriptor *desc, zval *arena) {
   switch (type) {
     case UPB_TYPE_INT64:
       ZVAL_LONG(php_val, upb_val.int64_val);
@@ -253,7 +309,13 @@ void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
       break;
     }
     case UPB_TYPE_MESSAGE:
-      php_error_docref(NULL, E_USER_ERROR, "NYI");
-      ZVAL_NULL(php_val);
+      if (!pbphp_cacheget(upb_val.msg_val, php_val)) {
+        pbphp_msg_newwrapper(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
+      }
+      break;
   }
+}
+
+void convert_module_init(void) {
+  util_init();
 }

@@ -28,20 +28,28 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef PHP_PROTOBUF_CONVERT_H_
-#define PHP_PROTOBUF_CONVERT_H_
-
-#include <php.h>
+#ifndef PHP_PROTOBUF_DEF_H_
+#define PHP_PROTOBUF_DEF_H_
 
 #include "php-upb.h"
-#include "def.h"
 
-upb_fieldtype_t pbphp_dtype_to_type(upb_descriptortype_t type);
-bool pbphp_toi64(zval *php_val, int64_t *i64);
-bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
-                    const Descriptor *desc, upb_arena *arena);
-void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
-                  const Descriptor *desc, zval *arena);
-void convert_module_init(void);
+void def_module_init();
 
-#endif  // PHP_PROTOBUF_CONVERT_H_
+// Creates a new DescriptorPool to wrap the given symtab. The DescriptorPool
+// takes ownership of the given symtab. If symtab is NULL, the DescriptorPool
+// will create an empty symtab instead.
+void descriptor_pool_create_symtab(zval *zv, upb_symtab *symtab);
+
+// Given a zval representing a DescriptorPool, steals and returns its symtab,
+// which is now owned by the caller.
+upb_symtab *descriptor_pool_steal(zval *zv);
+
+typedef struct Descriptor {
+  zend_object std;
+  const upb_msgdef *msgdef;
+  zend_class_entry *class_entry;
+} Descriptor;
+
+const Descriptor* pupb_getdesc(zend_class_entry *ce);
+
+#endif  // PHP_PROTOBUF_DEF_H_

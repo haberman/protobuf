@@ -7250,7 +7250,7 @@ bool upb_json_decode(const char *buf, size_t size, upb_msg *msg,
 
   if (setjmp(d.err)) return false;
 
-  jsondec_object(&d, msg, m);
+  jsondec_tomsg(&d, msg, m);
   return true;
 }
 
@@ -7644,14 +7644,16 @@ static void jsonenc_struct(jsonenc *e, const upb_msg *msg,
 
   jsonenc_putstr(e, "{");
 
-  while (upb_mapiter_next(fields, &iter)) {
-    upb_msgval key = upb_mapiter_key(fields, iter);
-    upb_msgval val = upb_mapiter_value(fields, iter);
+  if (fields) {
+    while (upb_mapiter_next(fields, &iter)) {
+      upb_msgval key = upb_mapiter_key(fields, iter);
+      upb_msgval val = upb_mapiter_value(fields, iter);
 
-    jsonenc_putsep(e, ", ", &first);
-    jsonenc_string(e, key.str_val);
-    jsonenc_putstr(e, ": ");
-    jsonenc_value(e, val.msg_val, upb_fielddef_msgsubdef(value_f));
+      jsonenc_putsep(e, ", ", &first);
+      jsonenc_string(e, key.str_val);
+      jsonenc_putstr(e, ": ");
+      jsonenc_value(e, val.msg_val, upb_fielddef_msgsubdef(value_f));
+    }
   }
 
   jsonenc_putstr(e, "}");
@@ -7662,17 +7664,19 @@ static void jsonenc_listvalue(jsonenc *e, const upb_msg *msg,
   const upb_fielddef *values_f = upb_msgdef_itof(m, 1);
   const upb_msgdef *values_m = upb_fielddef_msgsubdef(values_f);
   const upb_array *values = upb_msg_get(msg, values_f).array_val;
-  const size_t size = upb_array_size(values);
   size_t i;
   bool first = true;
 
   jsonenc_putstr(e, "[");
 
-  for (i = 0; i < size; i++) {
-    upb_msgval elem = upb_array_get(values, i);
+  if (values) {
+    const size_t size = upb_array_size(values);
+    for (i = 0; i < size; i++) {
+      upb_msgval elem = upb_array_get(values, i);
 
-    jsonenc_putsep(e, ", ", &first);
-    jsonenc_value(e, elem.msg_val, values_m);
+      jsonenc_putsep(e, ", ", &first);
+      jsonenc_value(e, elem.msg_val, values_m);
+    }
   }
 
   jsonenc_putstr(e, "]");
@@ -7930,7 +7934,7 @@ size_t upb_json_encode(const upb_msg *msg, const upb_msgdef *m,
 
   if (setjmp(e.err)) return -1;
 
-  jsonenc_msg(&e, msg, m);
+  jsonenc_msgfield(&e, msg, m);
   if (e.arena) upb_arena_free(e.arena);
   return jsonenc_nullz(&e, size);
 }

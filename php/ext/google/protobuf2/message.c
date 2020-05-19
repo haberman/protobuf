@@ -28,9 +28,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <Zend/zend_inheritance.h>
 #include <inttypes.h>
 #include <php.h>
+#include <Zend/zend_exceptions.h>
 #include <stdlib.h>
 
 #include "arena.h"
@@ -321,6 +321,164 @@ PHP_METHOD(Message, mergeFrom) {
   PBPHP_ASSERT(ok);
 }
 
+PHP_METHOD(Message, mergeFromString) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  char *data = NULL;
+  zend_long data_len;
+  const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
+  upb_arena *arena = arena_get(&intern->arena);
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &data, &data_len) ==
+      FAILURE) {
+    return;
+  }
+
+  if (!upb_decode(data, data_len, intern->msg, l, arena)) {
+    zend_throw_exception_ex(NULL, 0, "Error occurred during parsing");
+    return;
+  }
+}
+
+PHP_METHOD(Message, serializeToString) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
+  upb_arena *tmp_arena = upb_arena_new();
+  char *data;
+  size_t size;
+
+  data = upb_encode(intern->msg, l, tmp_arena, &size);
+
+  if (!data) {
+    zend_throw_exception_ex(NULL, 0, "Error occurred during serialization");
+    return;
+  }
+
+  RETURN_STRINGL(data, size);
+  upb_arena_free(tmp_arena);
+}
+
+PHP_METHOD(Message, mergeFromJsonString) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  char *data = NULL;
+  zend_long data_len;
+  const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
+  upb_arena *arena = arena_get(&intern->arena);
+  upb_status status;
+  zend_bool ignore_json_unknown = false;
+  int options = 0;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "s|b", &data, &data_len,
+                            &ignore_json_unknown) == FAILURE) {
+    return;
+  }
+
+  if (ignore_json_unknown) {
+    options |= UPB_JSONDEC_IGNOREUNKNOWN;
+  }
+
+  upb_status_clear(&status);
+  if (!upb_json_decode(data, data_len, intern->msg, intern->desc->msgdef,
+                       descriptor_pool_getsymtab(), 0, arena, &status)) {
+    zend_throw_exception_ex(NULL, 0, "Error occurred during parsing",
+                            upb_status_errmsg(&status));
+    return;
+  }
+}
+
+PHP_METHOD(Message, serializeToJsonString) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
+  upb_arena *tmp_arena = upb_arena_new();
+  char *data;
+  size_t size;
+  int options = 0;
+  char buf[1024];
+  zend_bool preserve_proto_fieldnames = false;
+  upb_status status;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "|b",
+                            &preserve_proto_fieldnames) == FAILURE) {
+    return;
+  }
+
+  if (preserve_proto_fieldnames) {
+    options |= UPB_JSONENC_PROTONAMES;
+  }
+
+  upb_status_clear(&status);
+  size = upb_json_encode(intern->msg, intern->desc->msgdef,
+                         descriptor_pool_getsymtab(), options, buf, sizeof(buf),
+                         &status);
+
+  if (!upb_ok(&status)) {
+    zend_throw_exception_ex(NULL, 0, "Error occurred during serialization");
+    return;
+  }
+
+  if (size >= sizeof(buf)) {
+    char *buf2 = malloc(size + 1);
+    upb_json_encode(intern->msg, intern->desc->msgdef,
+                    descriptor_pool_getsymtab(), options, buf2, size + 1,
+                    &status);
+    RETURN_STRINGL(buf2, size);
+    free(buf2);
+  } else {
+    RETURN_STRINGL(buf, size);
+  }
+}
+
+PHP_METHOD(Message, readWrapperValue) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  char* member;
+  const upb_fielddef *f;
+  zend_long size;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &member, &size) == FAILURE) {
+    return;
+  }
+
+  f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
+  PBPHP_ASSERT(f);
+
+  if (upb_msg_has(intern->msg, f)) {
+    const upb_msg *wrapper = upb_msg_get(intern->msg, f).msg_val;
+    const upb_msgdef *m = upb_fielddef_msgsubdef(f);
+    const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
+    upb_msgval msgval = upb_msg_get(wrapper, val_f);
+    zval ret;
+    pbphp_tozval(msgval, &ret, upb_fielddef_type(val_f), NULL, &intern->arena);
+    RETURN_ZVAL(&ret, 1, 0);
+  } else {
+    RETURN_NULL();
+  }
+}
+
+PHP_METHOD(Message, writeWrapperValue) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  upb_arena *arena = arena_get(&intern->arena);
+  char* member;
+  const upb_fielddef *f;
+  upb_msgval msgval;
+  zend_long size;
+  zval* val;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "sz", &member, &size, &val) ==
+      FAILURE) {
+    return;
+  }
+
+  f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
+  PBPHP_ASSERT(f);
+
+  if (pbphp_tomsgval(val, &msgval, upb_fielddef_type(f),
+                     pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f)),
+                     arena)) {
+    upb_msg *wrapper = upb_msg_mutable(intern->msg, f, arena).msg;
+    const upb_msgdef *m = upb_fielddef_msgsubdef(f);
+    const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
+    upb_msg_set(wrapper, val_f, msgval, arena);
+  }
+}
 
 PHP_METHOD(Message, whichOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
@@ -401,13 +559,13 @@ PHP_METHOD(Message, writeOneof) {
 static  zend_function_entry message_methods[] = {
   PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, discardUnknownFields, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, serializeToString, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, mergeFromString, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, serializeToJsonString, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, mergeFromJsonString, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, serializeToString, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, mergeFromString, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, serializeToJsonString, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, mergeFromJsonString, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, mergeFrom, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, readWrapperValue, NULL, ZEND_ACC_PROTECTED)
-  //PHP_ME(Message, writeWrapperValue, NULL, ZEND_ACC_PROTECTED)
+  PHP_ME(Message, readWrapperValue, NULL, ZEND_ACC_PROTECTED)
+  PHP_ME(Message, writeWrapperValue, NULL, ZEND_ACC_PROTECTED)
   PHP_ME(Message, readOneof, NULL, ZEND_ACC_PROTECTED)
   PHP_ME(Message, writeOneof, NULL, ZEND_ACC_PROTECTED)
   PHP_ME(Message, whichOneof, NULL, ZEND_ACC_PROTECTED)

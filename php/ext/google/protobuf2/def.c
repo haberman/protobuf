@@ -102,6 +102,11 @@ upb_symtab *descriptor_pool_steal(zval *zv) {
   return ret;
 }
 
+upb_symtab *descriptor_pool_getsymtab() {
+  DescriptorPool *intern = GetPool(get_generated_pool());
+  return intern->symtab;
+}
+
 PHP_METHOD(DescriptorPool, getGeneratedPool) {
   zval ret;
   ZVAL_COPY(&ret, get_generated_pool());

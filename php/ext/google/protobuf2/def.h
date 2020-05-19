@@ -46,6 +46,8 @@ void descriptor_pool_create_symtab(zval *zv, upb_symtab *symtab);
 // which is now owned by the caller.
 upb_symtab *descriptor_pool_steal(zval *zv);
 
+upb_symtab *descriptor_pool_getsymtab();
+
 typedef struct Descriptor {
   zend_object std;
   const upb_msgdef *msgdef;

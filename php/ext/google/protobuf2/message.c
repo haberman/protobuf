@@ -280,8 +280,89 @@ PHP_METHOD(Message, __construct) {
   }
 }
 
+PHP_METHOD(Message, clear) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  upb_msg_clear(intern->msg, intern->desc->msgdef);
+}
+
+PHP_METHOD(Message, whichOneof) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  const upb_oneofdef* oneof;
+  const upb_fielddef* field;
+  char* name;
+  zend_long len;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &name, &len) == FAILURE) {
+    return;
+  }
+
+  oneof = upb_msgdef_ntoo(intern->desc->msgdef, name, len);
+
+  if (!oneof) {
+    php_error_docref(NULL, E_USER_ERROR, "Message %s has no oneof %s.",
+                     upb_msgdef_fullname(intern->desc->msgdef), name);
+    return;
+  }
+
+  field = upb_msg_whichoneof(intern->msg, oneof);
+  RETURN_STRING(field ? upb_fielddef_name(field) : "");
+}
+
+PHP_METHOD(Message, readOneof) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  zend_long field_num;
+  const upb_fielddef* f;
+  zval ret;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &field_num) == FAILURE) {
+    return;
+  }
+
+  f = upb_msgdef_itof(intern->desc->msgdef, field_num);
+
+  if (!f) {
+    php_error_docref(NULL, E_USER_ERROR,
+                     "Internal error, no such oneof field %d\n",
+                     (int)field_num);
+  }
+
+  {
+    upb_msgval msgval = upb_msg_get(intern->msg, f);
+    const Descriptor *subdesc =
+        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    pbphp_tozval(msgval, &ret, upb_fielddef_type(f), subdesc, &intern->arena);
+  }
+
+  RETURN_ZVAL(&ret, 1, 0);
+}
+
+PHP_METHOD(Message, writeOneof) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  zend_long field_num;
+  const upb_fielddef* f;
+  upb_arena *arena = arena_get(&intern->arena);
+  upb_msgval msgval;
+  zval* val;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "lz", &field_num, &val) ==
+      FAILURE) {
+    return;
+  }
+
+  f = upb_msgdef_itof(intern->desc->msgdef, field_num);
+
+  if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(f),
+                      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f)),
+                      arena)) {
+    return;
+  }
+
+  upb_msg_set(intern->msg, f, msgval, arena);
+}
+
+
 static  zend_function_entry message_methods[] = {
-  //PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, discardUnknownFields, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, serializeToString, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, mergeFromString, NULL, ZEND_ACC_PUBLIC)
@@ -290,9 +371,9 @@ static  zend_function_entry message_methods[] = {
   //PHP_ME(Message, mergeFrom, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, readWrapperValue, NULL, ZEND_ACC_PROTECTED)
   //PHP_ME(Message, writeWrapperValue, NULL, ZEND_ACC_PROTECTED)
-  //PHP_ME(Message, readOneof, NULL, ZEND_ACC_PROTECTED)
-  //PHP_ME(Message, writeOneof, NULL, ZEND_ACC_PROTECTED)
-  //PHP_ME(Message, whichOneof, NULL, ZEND_ACC_PROTECTED)
+  PHP_ME(Message, readOneof, NULL, ZEND_ACC_PROTECTED)
+  PHP_ME(Message, writeOneof, NULL, ZEND_ACC_PROTECTED)
+  PHP_ME(Message, whichOneof, NULL, ZEND_ACC_PROTECTED)
   PHP_ME(Message, __construct, NULL, ZEND_ACC_PROTECTED)
   ZEND_FE_END
 };
@@ -350,9 +431,6 @@ void custom_data_init(const zend_class_entry* ce,
     }                                                              \
     Message_construct(getThis(), array_wrapper);                   \
   }
-
-PHP_METHOD(Message, clear) {
-}
 
 PHP_METHOD(Message, mergeFrom) {
   zval* value;

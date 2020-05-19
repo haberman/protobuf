@@ -1211,16 +1211,14 @@ static const upb_msg_internal *upb_msg_getinternal_const(const upb_msg *msg) {
   return UPB_PTR_AT(msg, -sizeof(upb_msg_internal), upb_msg_internal);
 }
 
-static upb_msg_internal_withext *upb_msg_getinternalwithext(
-    upb_msg *msg, const upb_msglayout *l) {
-  UPB_ASSERT(l->extendable);
-  return UPB_PTR_AT(msg, -sizeof(upb_msg_internal_withext),
-                    upb_msg_internal_withext);
+void _upb_msg_clear(upb_msg *msg, const upb_msglayout *l) {
+  size_t internal = upb_msg_internalsize(l);
+  void *mem = UPB_PTR_AT(msg, -internal, char);
+  memset(mem, 0, l->size + internal);
 }
 
 upb_msg *_upb_msg_new(const upb_msglayout *l, upb_arena *a) {
   void *mem = upb_arena_malloc(a, upb_msg_sizeof(l));
-  upb_msg_internal *in;
   upb_msg *msg;
 
   if (!mem) {
@@ -1228,20 +1226,7 @@ upb_msg *_upb_msg_new(const upb_msglayout *l, upb_arena *a) {
   }
 
   msg = UPB_PTR_AT(mem, upb_msg_internalsize(l), upb_msg);
-
-  /* Initialize normal members. */
-  memset(msg, 0, l->size);
-
-  /* Initialize internal members. */
-  in = upb_msg_getinternal(msg);
-  in->unknown = NULL;
-  in->unknown_len = 0;
-  in->unknown_size = 0;
-
-  if (l->extendable) {
-    upb_msg_getinternalwithext(msg, l)->extdict = NULL;
-  }
-
+  _upb_msg_clear(msg, l);
   return msg;
 }
 
@@ -5594,16 +5579,22 @@ bool upb_msg_has(const upb_msg *msg, const upb_fielddef *f) {
   }
 }
 
-bool upb_msg_hasoneof(const upb_msg *msg, const upb_oneofdef *o) {
+const upb_fielddef *upb_msg_whichoneof(const upb_msg *msg,
+                                       const upb_oneofdef *o) {
   upb_oneof_iter i;
   const upb_fielddef *f;
   const upb_msglayout_field *field;
+  const upb_msgdef *m = upb_oneofdef_containingtype(o);
+  uint32_t oneof_case;
 
+  /* This is far from optimal. */
   upb_oneof_begin(&i, o);
   if (upb_oneof_done(&i)) return false;
   f = upb_oneof_iter_field(&i);
   field = upb_fielddef_layout(f);
-  return *oneofcase(msg, field) != 0;
+  oneof_case = *oneofcase(msg, field);
+
+  return oneof_case ? upb_msgdef_itof(m, oneof_case) : NULL;
 }
 
 upb_msgval upb_msg_get(const upb_msg *msg, const upb_fielddef *f) {
@@ -5691,6 +5682,10 @@ void upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
   } else if (in_oneof(field)) {
     *oneofcase(msg, field) = field->number;
   }
+}
+
+void upb_msg_clear(upb_msg *msg, const upb_msgdef *m) {
+  _upb_msg_clear(msg, upb_msgdef_layout(m));
 }
 
 bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
@@ -6734,7 +6729,7 @@ static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
   }
 
   if (upb_fielddef_containingoneof(f) &&
-      upb_msg_hasoneof(msg, upb_fielddef_containingoneof(f))) {
+      upb_msg_whichoneof(msg, upb_fielddef_containingoneof(f))) {
     jsondec_err(d, "More than one field for this oneof.");
   }
 

@@ -289,8 +289,7 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
     }
     case UPB_TYPE_MESSAGE:
       PBPHP_ASSERT(desc);
-      upb_val->msg_val = pbphp_tomsg(php_val, desc, arena);
-      return upb_val->msg_val != NULL;
+      return pbphp_tomsg(php_val, desc, arena, (upb_msg**)&upb_val->msg_val);
   }
 
   return false;
@@ -331,9 +330,8 @@ void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
       break;
     }
     case UPB_TYPE_MESSAGE:
-      if (!pbphp_cacheget(upb_val.msg_val, php_val)) {
-        pbphp_msg_newwrapper(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
-      }
+      PBPHP_ASSERT(desc);
+      pbphp_getmsg(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
       break;
   }
 }

@@ -36,13 +36,13 @@ $PHP_BASE/bin/phpize
 make clean && make -j$(nproc)
 popd
 
-#export USE_ZEND_ALLOC=0
+export USE_ZEND_ALLOC=0
 
 CMD="$PHP -dextension=../ext/google/protobuf2/modules/protobuf.so $PHPUNIT --bootstrap autoload.php test2"
-$CMD
+#$CMD
 #gdb -ex=r --args $CMD
 #rr record $CMD
-#valgrind --track-origins=yes $CMD
+valgrind --track-origins=yes $CMD
 #$PHP -d protobuf.keep_descriptor_pool_after_request=1 -dextension=../ext/google/protobuf/modules/protobuf.so $PHPUNIT --bootstrap autoload.php .
 
 # # Make sure to run the memory test in debug mode.

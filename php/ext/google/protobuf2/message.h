@@ -32,8 +32,8 @@
 #define PHP_PROTOBUF_MESSAGE_H_
 
 void message_module_init();
-upb_msg *pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena);
-void pbphp_msg_newwrapper(zval *val, const Descriptor *klass, upb_msg *msg,
-                          zval *arena);
+bool pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena,
+                 upb_msg **msg);
+void pbphp_getmsg(zval *val, const Descriptor *desc, upb_msg *msg, zval *arena);
 
 #endif  // PHP_PROTOBUF_MESSAGE_H_

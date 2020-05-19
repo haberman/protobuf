@@ -39,5 +39,7 @@ void array_module_init();
 upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena);
 void pbphp_getrepeatedfield(zval *val, upb_array *arr, const upb_fielddef *f,
                             zval *arena);
+bool pbphp_array_init(upb_array *arr, const upb_fielddef *f, zval *val,
+                      upb_arena *arena);
 
 #endif  // PHP_PROTOBUF_ARRAY_H_

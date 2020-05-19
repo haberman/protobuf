@@ -5685,7 +5685,10 @@ void upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
   int size = upb_fielddef_isseq(f) ? sizeof(void *)
                                    : field_size[field->descriptortype];
   memcpy(mem, &val, size);
-  if (in_oneof(field)) {
+  if (field->presence > 0) {
+    uint32_t hasbit = field->presence;
+    *UPB_PTR_AT(msg, hasbit / 8, uint8_t) |= (1 << (hasbit % 8));
+  } else if (in_oneof(field)) {
     *oneofcase(msg, field) = field->number;
   }
 }

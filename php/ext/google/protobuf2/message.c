@@ -33,9 +33,6 @@
 #include <php.h>
 #include <stdlib.h>
 
-// This header does not include its dependencies.
-#include <Zend/zend_exceptions.h>
-
 #include "arena.h"
 #include "array.h"
 #include "convert.h"
@@ -72,15 +69,51 @@ static zend_object* message_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
-void pbphp_msg_newwrapper(zval *val, const Descriptor *desc, upb_msg *msg,
-                          zval *arena) {
-  Message *intern = emalloc(sizeof(Message));
-  zend_object_std_init(&intern->std, desc->class_entry);
-  intern->std.handlers = &message_object_handlers;
-  ZVAL_COPY(&intern->arena, arena);
-  intern->desc = desc;
-  intern->msg = msg;
-  ZVAL_OBJ(val, &intern->std);
+void pbphp_getmsg(zval *val, const Descriptor *desc, upb_msg *msg,
+                  zval *arena) {
+  if (!msg) {
+    ZVAL_NULL(val);
+    return;
+  }
+
+  if (!pbphp_cacheget(msg, val)) {
+    Message *intern = emalloc(sizeof(Message));
+    // XXX(haberman): verify whether we actually want to take this route.
+    desc->class_entry->default_properties_count = 0;
+    zend_object_std_init(&intern->std, desc->class_entry);
+    intern->std.handlers = &message_object_handlers;
+    ZVAL_COPY(&intern->arena, arena);
+    intern->desc = desc;
+    intern->msg = msg;
+    ZVAL_OBJ(val, &intern->std);
+    pbphp_cacheadd(intern->msg, &intern->std);
+  }
+}
+
+bool pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena, upb_msg **msg) {
+  PBPHP_ASSERT(desc);
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) == IS_NULL) {
+    *msg = NULL;
+    return true;
+  }
+
+  if (Z_TYPE_P(val) == IS_OBJECT &&
+      instanceof_function(Z_OBJCE_P(val), desc->class_entry)) {
+    Message *intern = (Message*)Z_OBJ_P(val);
+    upb_arena_fuse(arena, arena_get(&intern->arena));
+    *msg = intern->msg;
+    return true;
+  } else {
+    php_error_docref(NULL, E_USER_ERROR,
+                     "Given value is not an instance of %s.",
+                     ZSTR_VAL(desc->class_entry->name));
+    return false;
+  }
 }
 
 /**
@@ -88,6 +121,7 @@ void pbphp_msg_newwrapper(zval *val, const Descriptor *desc, upb_msg *msg,
  */
 static void message_dtor(zend_object* obj) {
   Message* intern = (Message*)obj;
+  pbphp_cachedel(intern->msg);
   zval_dtor(&intern->arena);
   zend_object_std_dtor(&intern->std);
 }
@@ -116,24 +150,24 @@ static zval *message_read_property(zval *obj, zval *member, int type,
 
   msgval = upb_msg_get(intern->msg, f);
 
-  if (upb_fielddef_isseq(f)) {
+  if (upb_fielddef_ismap(f)) {
+    pbphp_getmapfield(rv, (upb_map *)msgval.map_val, f, &intern->arena);
+  } else if (upb_fielddef_isseq(f)) {
     pbphp_getrepeatedfield(rv, (upb_array *)msgval.array_val, f,
                            &intern->arena);
   } else {
-    pbphp_tozval(msgval, rv, upb_fielddef_type(f), NULL, &intern->arena);
+    upb_fieldtype_t type = upb_fielddef_type(f);
+    const Descriptor *subdesc =
+        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    pbphp_tozval(msgval, rv, upb_fielddef_type(f), subdesc, &intern->arena);
   }
 
   return rv;
 }
 
-static void message_write_property(zval *obj, zval *member, zval *val,
-                                   void **cache_slot) {
-  Message* intern = (Message*)Z_OBJ_P(obj);
-  const upb_fielddef *f = get_field(intern, member);
+static void pbphp_msg_set(Message *intern, const upb_fielddef *f, zval *val) {
   upb_arena *arena = arena_get(&intern->arena);
   upb_msgval msgval;
-
-  if (!f) return;
 
   if (upb_fielddef_ismap(f)) {
     msgval.map_val = pbphp_getmap(val, f, arena);
@@ -152,20 +186,77 @@ static void message_write_property(zval *obj, zval *member, zval *val,
   upb_msg_set(intern->msg, f, msgval, arena);
 }
 
-upb_msg *pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena) {
-  PBPHP_ASSERT(desc);
-  if (Z_TYPE_P(val) == IS_OBJECT &&
-      instanceof_function(Z_OBJCE_P(val), desc->class_entry)) {
-    Message *intern = (Message*)Z_OBJ_P(val);
-    if (arena) {
-      upb_arena_fuse(arena, arena_get(&intern->arena));
-    }
-    return intern->msg;
-  } else {
+static void message_write_property(zval *obj, zval *member, zval *val,
+                                   void **cache_slot) {
+  Message* intern = (Message*)Z_OBJ_P(obj);
+  const upb_fielddef *f = get_field(intern, member);
+
+  if (!f) return;
+
+  pbphp_msg_set(intern, f, val);
+}
+
+static zval* message_get_property_ptr_ptr(zval* object, zval* member, int type,
+                                          void** cache_slot) {
+  return NULL;
+}
+
+static HashTable* message_get_properties(zval* object TSRMLS_DC) {
+  return NULL;
+}
+
+static bool init_msg(upb_msg *msg, const upb_msgdef *m, zval *init,
+                     upb_arena *arena) {
+  HashTable* table = HASH_OF(init);
+  HashPosition pos;
+
+  if (Z_ISREF_P(init)) {
+    ZVAL_DEREF(init);
+  }
+
+  if (Z_TYPE_P(init) != IS_ARRAY) {
     php_error_docref(NULL, E_USER_ERROR,
-                     "Given value is not an instance of %s.",
-                     ZSTR_VAL(desc->class_entry->name));
-    return NULL;
+                     "Initializer for a message %s must be an array.",
+                     upb_msgdef_fullname(m));
+    return false;
+  }
+
+  zend_hash_internal_pointer_reset_ex(table, &pos);
+  while (true) {
+    zval key;
+    zval *val;
+    const upb_fielddef *f;
+
+    zend_hash_get_current_key_zval_ex(table, &key, &pos);
+    val = zend_hash_get_current_data_ex(table, &pos);
+
+    if (!val) break;
+
+    f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
+
+    if (!f) return false;
+
+    if (upb_fielddef_ismap(f)) {
+      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
+      if (!pbphp_map_init(msgval.map, f, val, arena)) return false;
+    } else if (upb_fielddef_isseq(f)) {
+      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
+      if (!pbphp_array_init(msgval.array, f, val, arena)) return false;
+    } else {
+      // By handling submessages in this case, we only allow:
+      //   ['foo_submsg': new Foo(['a' => 1])]
+      // not:
+      //   ['foo_submsg': ['a' => 1]]
+      upb_fieldtype_t type = upb_fielddef_type(f);
+      const Descriptor *desc =
+          pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+      upb_msgval msgval;
+      if (!pbphp_tomsgval(val, &msgval, type, desc, arena)) return false;
+      upb_msg_set(msg, f, msgval, arena);
+    }
+
+    zend_hash_move_forward_ex(table, &pos);
+    zval_dtor(&key);
   }
 }
 
@@ -174,9 +265,19 @@ PHP_METHOD(Message, __construct) {
   const Descriptor* desc = pupb_getdesc(Z_OBJCE_P(getThis()));
   const upb_msgdef *msgdef = desc->msgdef;
   upb_arena *arena = arena_get(&intern->arena);
+  zval *init_arr;
 
   intern->desc = desc;
   intern->msg = upb_msg_new(msgdef, arena);
+  pbphp_cacheadd(intern->msg, &intern->std);
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "|a!", &init_arr) == FAILURE) {
+    return;
+  }
+
+  if (init_arr) {
+    init_msg(intern->msg, desc->msgdef, init_arr, arena);
+  }
 }
 
 static  zend_function_entry message_methods[] = {
@@ -211,6 +312,8 @@ static void message_init() {
   h->dtor_obj = message_dtor;
   h->read_property = message_read_property;
   h->write_property = message_write_property;
+  h->get_properties = message_get_properties;
+  h->get_property_ptr_ptr = message_get_property_ptr_ptr;
 }
 
 void message_module_init() {

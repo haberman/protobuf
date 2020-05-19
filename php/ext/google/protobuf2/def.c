@@ -263,7 +263,7 @@ const Descriptor* pupb_getdesc(zend_class_entry *ce) {
 
 const Descriptor* pupb_getdesc_from_msgdef(const upb_msgdef *m) {
   if (m) {
-    const char *classname =
+    char *classname =
         pbphp_get_classname(upb_msgdef_file(m), upb_msgdef_fullname(m));
     zend_string *str = zend_string_init(classname, strlen(classname), 0);
     zend_class_entry *ce = zend_lookup_class(str);  // May autoload the class.
@@ -274,6 +274,7 @@ const Descriptor* pupb_getdesc_from_msgdef(const upb_msgdef *m) {
       zend_error(E_ERROR, "Couldn't load generated class %s", classname);
     }
 
+    free(classname);
     return pupb_getdesc(ce);
   } else {
     return NULL;

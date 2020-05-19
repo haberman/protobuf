@@ -213,8 +213,9 @@ bool pbphp_cacheget(const void *upb_obj, zval *val) {
 
 void pbphp_namemap_add(const upb_filedef *file, const char *pb_name,
                        const void *val) {
-  const char *key = pbphp_get_classname(file, pb_name);
+  char *key = pbphp_get_classname(file, pb_name);
   zend_hash_str_add_ptr(&PROTOBUF_G(name_cache), key, strlen(key), (void*)val);
+  free(key);
 }
 
 const void *pbphp_namemap_get(zend_class_entry *ce) {

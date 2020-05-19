@@ -35,6 +35,6 @@
 
 // Translates a protobuf symbol name (eg. foo.bar.Baz) into a PHP class name
 // (eg. \Foo\Bar\Baz).
-const char *pbphp_get_classname(const upb_filedef *file, const char *fullname);
+char *pbphp_get_classname(const upb_filedef *file, const char *fullname);
 
 #endif  // PHP_PROTOBUF_NAMES_H_

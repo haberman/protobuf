@@ -144,18 +144,20 @@ static zval *message_read_property(zval *obj, zval *member, int type,
                                    void **cache_slot, zval *rv) {
   Message* intern = (Message*)Z_OBJ_P(obj);
   const upb_fielddef *f = get_field(intern, member);
+  upb_arena *arena = arena_get(&intern->arena);
   upb_msgval msgval;
 
   if (!f) return NULL;
 
-  msgval = upb_msg_get(intern->msg, f);
 
   if (upb_fielddef_ismap(f)) {
-    pbphp_getmapfield(rv, (upb_map *)msgval.map_val, f, &intern->arena);
+    upb_mutmsgval msgval = upb_msg_mutable(intern->msg, f, arena);
+    pbphp_getmapfield(rv, msgval.map, f, &intern->arena);
   } else if (upb_fielddef_isseq(f)) {
-    pbphp_getrepeatedfield(rv, (upb_array *)msgval.array_val, f,
-                           &intern->arena);
+    upb_mutmsgval msgval = upb_msg_mutable(intern->msg, f, arena);
+    pbphp_getrepeatedfield(rv, msgval.array, f, &intern->arena);
   } else {
+    upb_msgval msgval = upb_msg_get(intern->msg, f);
     upb_fieldtype_t type = upb_fielddef_type(f);
     const Descriptor *subdesc =
         pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
@@ -285,6 +287,41 @@ PHP_METHOD(Message, clear) {
   upb_msg_clear(intern->msg, intern->desc->msgdef);
 }
 
+PHP_METHOD(Message, mergeFrom) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  Message* from;
+  upb_arena *arena = arena_get(&intern->arena);
+  const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
+  zval* value;
+  char *pb;
+  size_t size;
+  bool ok;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &value,
+                            intern->desc->class_entry) == FAILURE) {
+    return;
+  }
+
+  from = (Message*)Z_OBJ_P(value);
+
+  // Should be guaranteed since we passed the class type to
+  // zend_parse_parameters().
+  PBPHP_ASSERT(from->desc == intern->desc);
+
+  // TODO(haberman): use a temp arena for this once we can make upb_decode()
+  // copy strings.
+  pb = upb_encode(from->msg, l, arena, &size);
+
+  if (!pb) {
+    php_error_docref(NULL, E_USER_ERROR, "Max nesting exceeded");
+    return;
+  }
+
+  ok = upb_decode(pb, size, intern->msg, l, arena);
+  PBPHP_ASSERT(ok);
+}
+
+
 PHP_METHOD(Message, whichOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const upb_oneofdef* oneof;
@@ -368,7 +405,7 @@ static  zend_function_entry message_methods[] = {
   //PHP_ME(Message, mergeFromString, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, serializeToJsonString, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, mergeFromJsonString, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, mergeFrom, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, mergeFrom, NULL, ZEND_ACC_PUBLIC)
   //PHP_ME(Message, readWrapperValue, NULL, ZEND_ACC_PROTECTED)
   //PHP_ME(Message, writeWrapperValue, NULL, ZEND_ACC_PROTECTED)
   PHP_ME(Message, readOneof, NULL, ZEND_ACC_PROTECTED)

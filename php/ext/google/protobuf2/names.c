@@ -170,14 +170,14 @@ static void fill_classname(const char *fullname,
   }
 }
 
-const char *pbphp_get_classname(const upb_filedef *file, const char *fullname) {
+char *pbphp_get_classname(const upb_filedef *file, const char *fullname) {
   // Prepend '.' to package name to make it absolute. In the 5 additional
   // bytes allocated, one for '.', one for trailing 0, and 3 for 'GPB' if
   // given message is google.protobuf.Empty.
   const char *package = upb_filedef_package(file);
   const char *php_namespace = upb_filedef_phpnamespace(file);
   const char *prefix = upb_filedef_phpprefix(file);
-  const char *ret;
+  char *ret;
   stringsink namesink;
   stringsink_init(&namesink);
 

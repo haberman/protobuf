@@ -31,6 +31,10 @@
 #ifndef PHP_PROTOBUF_MESSAGE_H_
 #define PHP_PROTOBUF_MESSAGE_H_
 
+#include <stdbool.h>
+
+#include "def.h"
+
 void message_module_init();
 bool pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena,
                  upb_msg **msg);

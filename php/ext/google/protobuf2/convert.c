@@ -30,6 +30,11 @@
 
 #include "convert.h"
 
+#include <php.h>
+
+// Must be last.
+#include <Zend/zend_exceptions.h>
+
 #include "message.h"
 #include "php-upb.h"
 #include "protobuf.h"
@@ -137,9 +142,42 @@ upb_fieldtype_t pbphp_dtype_to_type(upb_descriptortype_t type) {
   return 0;
 }
 
-bool pbphp_toi64(zval *php_val, int64_t *i64) {
-  convert_scalar_to_number(php_val);
+static bool buftouint64(const char *ptr, const char *end, uint64_t *val) {
+  uint64_t u64 = 0;
+  while (ptr < end) {
+    unsigned ch = *ptr - '0';
+    if (ch >= 10) break;
+    if (u64 > UINT64_MAX / 10 || u64 * 10 > UINT64_MAX - ch) {
+      return false;
+    }
+    u64 *= 10;
+    u64 += ch;
+    ptr++;
+  }
 
+  *val = u64;
+  return ptr;
+}
+
+static bool buftoint64(const char *ptr, const char *end, int64_t *val) {
+  bool neg = false;
+  uint64_t u64;
+
+  if (ptr != end && *ptr == '-') {
+    ptr++;
+    neg = true;
+  }
+
+  if (!buftouint64(ptr, end, &u64) ||
+      u64 > (uint64_t)INT64_MAX + neg) {
+    return false;
+  }
+
+  *val = neg ? -u64 : u64;
+  return true;
+}
+
+bool pbphp_toi64(zval *php_val, int64_t *i64) {
   switch (Z_TYPE_P(php_val)) {
     case IS_LONG:
       *i64 = Z_LVAL_P(php_val);
@@ -147,21 +185,25 @@ bool pbphp_toi64(zval *php_val, int64_t *i64) {
     case IS_DOUBLE: {
       double dbl = Z_DVAL_P(php_val);
       if (dbl > 9223372036854774784.0 || dbl < -9223372036854775808.0) {
-        php_error_docref(NULL, E_USER_ERROR, "Out of range");
+        zend_throw_exception_ex(NULL, 0, "Out of range");
         return false;
       }
       *i64 = dbl; /* must be guarded, overflow here is UB */
       return true;
     }
+    case IS_STRING: {
+      const char *buf = Z_STRVAL_P(php_val);
+      // PHP would accept scientific notation here, but we're going to be a
+      // little more discerning and only accept pure integers.
+      return buftoint64(buf, buf + Z_STRLEN_P(php_val), i64);
+    }
     default:
-      php_error_docref(NULL, E_USER_ERROR, "Cannot convert to integer");
+      zend_throw_exception_ex(NULL, 0, "Cannot convert to integer");
       return false;
   }
 }
 
 static bool to_double(zval *php_val, double *dbl) {
-  convert_scalar_to_number(php_val);
-
   switch (Z_TYPE_P(php_val)) {
     case IS_LONG:
       *dbl = Z_LVAL_P(php_val);
@@ -169,8 +211,22 @@ static bool to_double(zval *php_val, double *dbl) {
     case IS_DOUBLE:
       *dbl = Z_DVAL_P(php_val);
       return true;
+    case IS_STRING: {
+      zend_long lval;
+      switch (is_numeric_string(Z_STRVAL_P(php_val), Z_STRLEN_P(php_val), &lval,
+                                dbl, false)) {
+        case IS_LONG:
+          *dbl = lval;
+          return true;
+        case IS_DOUBLE:
+          return true;
+        default:
+          goto fail;
+      }
+    }
     default:
-      php_error_docref(NULL, E_USER_ERROR, "Cannot convert to double");
+     fail:
+      zend_throw_exception_ex(NULL, 0, "Cannot convert to double");
       return false;
   }
 }
@@ -198,8 +254,7 @@ static bool to_bool(zval* from, bool* to) {
       }
       return true;
     default:
-      php_error_docref(NULL, E_USER_ERROR,
-                       "Given value cannot be converted to bool.");
+      zend_throw_exception_ex(NULL, 0, "Cannot convert to bool");
       return false;
   }
 }
@@ -222,8 +277,7 @@ static bool to_string(zval* from) {
       return true;
     }
     default:
-      php_error_docref(NULL, E_USER_ERROR,
-                       "Given value cannot be converted to string.");
+      zend_throw_exception_ex(NULL, 0, "Cannot convert to string");
       return false;
   }
 }

@@ -5668,6 +5668,9 @@ upb_mutmsgval upb_msg_mutable(upb_msg *msg, const upb_fielddef *f,
 
     if (wrong_oneof) {
       *oneofcase(msg, field) = field->number;
+    } else if (field->presence > 0) {
+      uint32_t hasbit = field->presence;
+      *UPB_PTR_AT(msg, hasbit / 8, uint8_t) |= (1 << (hasbit % 8));
     }
   }
   return ret;
@@ -5686,6 +5689,24 @@ void upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
   } else if (in_oneof(field)) {
     *oneofcase(msg, field) = field->number;
   }
+}
+
+void upb_msg_clearfield(upb_msg *msg, const upb_fielddef *f) {
+  const upb_msglayout_field *field = upb_fielddef_layout(f);
+  char *mem = UPB_PTR_AT(msg, field->offset, char);
+  int size = upb_fielddef_isseq(f) ? sizeof(void *)
+                                   : field_size[field->descriptortype];
+
+  if (field->presence > 0) {
+    uint32_t hasbit = field->presence;
+    *UPB_PTR_AT(msg, hasbit / 8, uint8_t) &= ~(1 << (hasbit % 8));
+  } else if (in_oneof(field)) {
+    uint32_t *oneof_case = oneofcase(msg, field);
+    if (*oneof_case != field->number) return;
+    *oneof_case = 0;
+  }
+
+  memset(mem, 0, size);
 }
 
 void upb_msg_clear(upb_msg *msg, const upb_msgdef *m) {

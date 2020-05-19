@@ -57,8 +57,24 @@ PHP_METHOD(Util, checkBool) {}
 PHP_METHOD(Util, checkString) {}
 PHP_METHOD(Util, checkBytes) {}
 PHP_METHOD(Util, checkMessage) {}
-PHP_METHOD(Util, checkMapField) {}
-PHP_METHOD(Util, checkRepeatedField) {}
+
+PHP_METHOD(Util, checkMapField) {
+  zval *val, *key_type, *val_type, *klass;
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "zzz|z", &val, &key_type,
+                            &val_type, &klass) == FAILURE) {
+    return;
+  }
+  RETURN_ZVAL(val, 1, 0);
+}
+
+PHP_METHOD(Util, checkRepeatedField) {
+  zval *val, *type, *klass;
+  if (zend_parse_parameters(ZEND_NUM_ARGS(), "zz|z", &val, &type, &klass) ==
+      FAILURE) {
+    return;
+  }
+  RETURN_ZVAL(val, 1, 0);
+}
 
 static zend_function_entry util_methods[] = {
   PHP_ME(Util, checkInt32,  NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
@@ -192,6 +208,7 @@ static bool to_string(zval* from) {
   if (Z_ISREF_P(from)) {
     ZVAL_DEREF(from);
   }
+
   switch (Z_TYPE_P(from)) {
     case IS_STRING:
       return true;
@@ -214,6 +231,10 @@ static bool to_string(zval* from) {
 bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
                     const Descriptor *desc, upb_arena *arena) {
   int64_t i64;
+
+  if (Z_ISREF_P(php_val)) {
+    ZVAL_DEREF(php_val);
+  }
 
   switch (type) {
     case UPB_TYPE_INT64:
@@ -267,6 +288,7 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
       return true;
     }
     case UPB_TYPE_MESSAGE:
+      PBPHP_ASSERT(desc);
       upb_val->msg_val = pbphp_tomsg(php_val, desc, arena);
       return upb_val->msg_val != NULL;
   }

@@ -28,10 +28,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <php.h>
-#include <Zend/zend_exceptions.h>
-
 #include "def.h"
+
+#include <php.h>
+
+#include "names.h"
 #include "php-upb.h"
 #include "protobuf.h"
 
@@ -258,6 +259,25 @@ const Descriptor* pupb_getdesc(zend_class_entry *ce) {
 
 
   return ret;
+}
+
+const Descriptor* pupb_getdesc_from_msgdef(const upb_msgdef *m) {
+  if (m) {
+    const char *classname =
+        pbphp_get_classname(upb_msgdef_file(m), upb_msgdef_fullname(m));
+    zend_string *str = zend_string_init(classname, strlen(classname), 0);
+    zend_class_entry *ce = zend_lookup_class(str);  // May autoload the class.
+
+    zend_string_release (str);
+
+    if (!ce) {
+      zend_error(E_ERROR, "Couldn't load generated class %s", classname);
+    }
+
+    return pupb_getdesc(ce);
+  } else {
+    return NULL;
+  }
 }
 
 static zend_function_entry descriptor_methods[] = {

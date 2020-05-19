@@ -31,6 +31,8 @@
 #ifndef PHP_PROTOBUF_DEF_H_
 #define PHP_PROTOBUF_DEF_H_
 
+#include <php.h>
+
 #include "php-upb.h"
 
 void def_module_init();
@@ -51,5 +53,6 @@ typedef struct Descriptor {
 } Descriptor;
 
 const Descriptor* pupb_getdesc(zend_class_entry *ce);
+const Descriptor* pupb_getdesc_from_msgdef(const upb_msgdef *m);
 
 #endif  // PHP_PROTOBUF_DEF_H_

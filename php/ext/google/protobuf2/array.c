@@ -82,6 +82,69 @@ static void repeated_field_dtor(zend_object* obj) {
   zend_object_std_dtor(&intern->std);
 }
 
+upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
+  upb_fieldtype_t type = upb_fielddef_type(f);
+  const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) == IS_ARRAY) {
+    // User passed a PHP array. Create a upb_array of the appropriate type
+    // and attempt to add all its elements.
+    upb_array *arr = upb_array_new(arena, type);
+    HashTable* table = HASH_OF(val);
+    HashPosition pos;
+
+    zend_hash_internal_pointer_reset_ex(table, &pos);
+    while (true) {
+      zval *zv = zend_hash_get_current_data_ex(table, &pos);
+      upb_msgval val;
+
+      if (!zv) break;
+
+      if (!pbphp_tomsgval(zv, &val, type, desc, arena)) {
+        return NULL;
+      }
+
+      upb_array_append(arr, val, arena);
+      zend_hash_move_forward_ex(table, &pos);
+    }
+
+    return arr;
+  } else if (Z_TYPE_P(val) == IS_OBJECT &&
+             Z_OBJCE_P(val) == repeated_field_ce) {
+    RepeatedField *intern = (RepeatedField*)Z_OBJ_P(val);
+
+    if (intern->type != upb_fielddef_type(f) || intern->desc != desc) {
+      php_error_docref(NULL, E_USER_ERROR,
+                       "Wrong type for this repeated field.");
+    }
+
+    return intern->array;
+  } else {
+    php_error_docref(NULL, E_USER_ERROR, "Must be a repeated field");
+    return NULL;
+  }
+}
+
+void pbphp_getrepeatedfield(zval *val, upb_array *arr, const upb_fielddef *f,
+                            zval *arena) {
+  if (!pbphp_cacheget(arr, val)) {
+    RepeatedField *intern = emalloc(sizeof(RepeatedField));
+    zend_object_std_init(&intern->std, repeated_field_ce);
+    intern->std.handlers = &repeated_field_object_handlers;
+    ZVAL_COPY(&intern->arena, arena);
+    intern->array = arr;
+    intern->type = upb_fielddef_type(f);
+    intern->desc = NULL;  // TODO
+    // Skip object_properties_init(), we don't allow derived classes.
+    pbphp_cacheadd(intern->array, &intern->std);
+    ZVAL_OBJ(val, &intern->std);
+  }
+}
+
 /**
  * Constructs an instance of RepeatedField.
  * @param long Type of the stored element.

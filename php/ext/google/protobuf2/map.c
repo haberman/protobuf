@@ -83,6 +83,66 @@ static void map_field_dtor(zend_object* obj) {
   zend_object_std_dtor(&intern->std);
 }
 
+upb_map *pbphp_getmap(zval *val, const upb_fielddef *f, upb_arena *arena) {
+  upb_fieldtype_t type = upb_fielddef_type(f);
+  const upb_msgdef *ent = upb_fielddef_msgsubdef(f);
+  const upb_fielddef *key_f = upb_msgdef_itof(ent, 1);
+  const upb_fielddef *val_f = upb_msgdef_itof(ent, 2);
+  upb_fieldtype_t key_type = upb_fielddef_type(key_f);
+  upb_fieldtype_t val_type = upb_fielddef_type(val_f);
+  const Descriptor *desc =
+      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(val_f));
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) == IS_ARRAY) {
+    // User passed a PHP array. Create a upb_map of the appropriate type
+    // and attempt to add all its elements.
+    upb_map *map = upb_map_new(arena, key_type, val_type);
+    HashTable* table = HASH_OF(val);
+    HashPosition pos;
+
+    zend_hash_internal_pointer_reset_ex(table, &pos);
+    while (true) {
+      zval php_key;
+      zval *php_val;
+      upb_msgval upb_key;
+      upb_msgval upb_val;
+
+      zend_hash_get_current_key_zval_ex(table, &php_key, &pos);
+      php_val = zend_hash_get_current_data_ex(table, &pos);
+
+      if (!php_val) break;
+
+      if (!pbphp_tomsgval(&php_key, &upb_key, key_type, NULL, arena) ||
+          !pbphp_tomsgval(php_val, &upb_val, val_type, desc, arena)) {
+        return NULL;
+      }
+
+      upb_map_set(map, upb_key, upb_val, arena);
+      zend_hash_move_forward_ex(table, &pos);
+      zval_dtor(&php_key);
+    }
+
+    return map;
+  } else if (Z_TYPE_P(val) == IS_OBJECT && Z_OBJCE_P(val) == map_field_ce) {
+    MapField *intern = (MapField*)Z_OBJ_P(val);
+
+    if (intern->key_type != key_type || intern->val_type != val_type ||
+        intern->desc != desc) {
+      php_error_docref(NULL, E_USER_ERROR, "Wrong type for this map field.");
+      return NULL;
+    }
+
+    return intern->map;
+  } else {
+    php_error_docref(NULL, E_USER_ERROR, "Must be a map");
+    return NULL;
+  }
+}
+
 /**
  * Constructs an instance of RepeatedField.
  * @param long Key type.

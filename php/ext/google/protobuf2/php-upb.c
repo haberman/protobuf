@@ -6033,15 +6033,11 @@ static void jsondec_push(jsondec *d) {
 }
 
 static bool jsondec_seqnext(jsondec *d, char end_ch) {
+  bool is_first = d->is_first;
+  d->is_first = false;
   jsondec_skipws(d);
   if (*d->ptr == end_ch) return false;
-
-  if (d->is_first) {
-    d->is_first = false;
-  } else {
-    jsondec_parselit(d, ",");
-  }
-
+  if (!is_first) jsondec_parselit(d, ",");
   return true;
 }
 
@@ -6648,7 +6644,12 @@ static upb_msgval jsondec_enum(jsondec *d, const upb_fielddef *f) {
     upb_strview str = jsondec_string(d);
     upb_msgval val;
     if (!upb_enumdef_ntoi(e, str.data, str.size, &val.int32_val)) {
-      jsondec_err(d, "Unknown enumerator");
+      if (d->options & UPB_JSONDEC_IGNOREUNKNOWN) {
+        val.int32_val = 0;
+      } else {
+        jsondec_errf(d, "Unknown enumerator: '" UPB_STRVIEW_FORMAT "'",
+                     UPB_STRVIEW_ARGS(str));
+      }
     }
     return val;
   } else {
@@ -6792,7 +6793,9 @@ static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
 
 static void jsondec_object(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
   jsondec_objstart(d);
-  while (jsondec_objnext(d)) jsondec_field(d, msg, m);
+  while (jsondec_objnext(d)) {
+    jsondec_field(d, msg, m);
+  }
   jsondec_objend(d);
 }
 

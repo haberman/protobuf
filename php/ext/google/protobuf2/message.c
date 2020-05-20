@@ -208,61 +208,6 @@ static HashTable* message_get_properties(zval* object TSRMLS_DC) {
   return NULL;
 }
 
-static bool init_msg(upb_msg *msg, const upb_msgdef *m, zval *init,
-                     upb_arena *arena) {
-  HashTable* table = HASH_OF(init);
-  HashPosition pos;
-
-  if (Z_ISREF_P(init)) {
-    ZVAL_DEREF(init);
-  }
-
-  if (Z_TYPE_P(init) != IS_ARRAY) {
-    zend_throw_exception_ex(NULL, 0,
-                            "Initializer for a message %s must be an array.",
-                            upb_msgdef_fullname(m));
-    return false;
-  }
-
-  zend_hash_internal_pointer_reset_ex(table, &pos);
-  while (true) {
-    zval key;
-    zval *val;
-    const upb_fielddef *f;
-
-    zend_hash_get_current_key_zval_ex(table, &key, &pos);
-    val = zend_hash_get_current_data_ex(table, &pos);
-
-    if (!val) break;
-
-    f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
-
-    if (!f) return false;
-
-    if (upb_fielddef_ismap(f)) {
-      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
-      if (!pbphp_map_init(msgval.map, f, val, arena)) return false;
-    } else if (upb_fielddef_isseq(f)) {
-      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
-      if (!pbphp_array_init(msgval.array, f, val, arena)) return false;
-    } else {
-      // By handling submessages in this case, we only allow:
-      //   ['foo_submsg': new Foo(['a' => 1])]
-      // not:
-      //   ['foo_submsg': ['a' => 1]]
-      upb_fieldtype_t type = upb_fielddef_type(f);
-      const Descriptor *desc =
-          pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
-      upb_msgval msgval;
-      if (!pbphp_tomsgval(val, &msgval, type, desc, arena)) return false;
-      upb_msg_set(msg, f, msgval, arena);
-    }
-
-    zend_hash_move_forward_ex(table, &pos);
-    zval_dtor(&key);
-  }
-}
-
 PHP_METHOD(Message, __construct) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const Descriptor* desc = pupb_getdesc(Z_OBJCE_P(getThis()));
@@ -279,7 +224,7 @@ PHP_METHOD(Message, __construct) {
   }
 
   if (init_arr) {
-    init_msg(intern->msg, desc->msgdef, init_arr, arena);
+    pbphp_initmsg(intern->msg, desc->msgdef, init_arr, arena);
   }
 }
 
@@ -325,6 +270,7 @@ PHP_METHOD(Message, mergeFrom) {
 PHP_METHOD(Message, mergeFromString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   char *data = NULL;
+  char *data_copy = NULL;
   zend_long data_len;
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
   upb_arena *arena = arena_get(&intern->arena);
@@ -334,7 +280,11 @@ PHP_METHOD(Message, mergeFromString) {
     return;
   }
 
-  if (!upb_decode(data, data_len, intern->msg, l, arena)) {
+  // TODO(haberman): avoid this copy when we can make the decoder copy.
+  data_copy = upb_arena_malloc(arena, data_len);
+  memcpy(data_copy, data, data_len);
+
+  if (!upb_decode(data_copy, data_len, intern->msg, l, arena)) {
     zend_throw_exception_ex(NULL, 0, "Error occurred during parsing");
     return;
   }
@@ -351,16 +301,18 @@ PHP_METHOD(Message, serializeToString) {
 
   if (!data) {
     zend_throw_exception_ex(NULL, 0, "Error occurred during serialization");
+    upb_arena_free(tmp_arena);
     return;
   }
 
-  RETURN_STRINGL(data, size);
+  RETVAL_STRINGL(data, size);
   upb_arena_free(tmp_arena);
 }
 
 PHP_METHOD(Message, mergeFromJsonString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   char *data = NULL;
+  char *data_copy = NULL;
   zend_long data_len;
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
   upb_arena *arena = arena_get(&intern->arena);
@@ -373,12 +325,17 @@ PHP_METHOD(Message, mergeFromJsonString) {
     return;
   }
 
+  // TODO(haberman): avoid this copy when we can make the decoder copy.
+  data_copy = upb_arena_malloc(arena, data_len + 1);
+  memcpy(data_copy, data, data_len);
+  data_copy[data_len] = '\0';
+
   if (ignore_json_unknown) {
     options |= UPB_JSONDEC_IGNOREUNKNOWN;
   }
 
   upb_status_clear(&status);
-  if (!upb_json_decode(data, data_len, intern->msg, intern->desc->msgdef,
+  if (!upb_json_decode(data_copy, data_len, intern->msg, intern->desc->msgdef,
                        descriptor_pool_getsymtab(), 0, arena, &status)) {
     zend_throw_exception_ex(NULL, 0, "Error occurred during parsing",
                             upb_status_errmsg(&status));
@@ -389,7 +346,6 @@ PHP_METHOD(Message, mergeFromJsonString) {
 PHP_METHOD(Message, serializeToJsonString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
-  upb_arena *tmp_arena = upb_arena_new();
   char *data;
   size_t size;
   int options = 0;
@@ -421,10 +377,10 @@ PHP_METHOD(Message, serializeToJsonString) {
     upb_json_encode(intern->msg, intern->desc->msgdef,
                     descriptor_pool_getsymtab(), options, buf2, size + 1,
                     &status);
-    RETURN_STRINGL(buf2, size);
+    RETVAL_STRINGL(buf2, size);
     free(buf2);
   } else {
-    RETURN_STRINGL(buf, size);
+    RETVAL_STRINGL(buf, size);
   }
 }
 
@@ -573,7 +529,6 @@ PHP_METHOD(Message, writeOneof) {
 
   upb_msg_set(intern->msg, f, msgval, arena);
 }
-
 
 static  zend_function_entry message_methods[] = {
   PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)

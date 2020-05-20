@@ -4116,6 +4116,12 @@ bool upb_msgdef_isnumberwrapper(const upb_msgdef *m) {
          type <= UPB_WELLKNOWN_UINT32VALUE;
 }
 
+bool upb_msgdef_iswrapper(const upb_msgdef *m) {
+  upb_wellknowntype_t type = upb_msgdef_wellknowntype(m);
+  return type >= UPB_WELLKNOWN_DOUBLEVALUE &&
+         type <= UPB_WELLKNOWN_BOOLVALUE;
+}
+
 void upb_msg_field_begin(upb_msg_field_iter *iter, const upb_msgdef *m) {
   upb_inttable_begin(iter, &m->itof);
 }

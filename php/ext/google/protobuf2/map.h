@@ -40,7 +40,5 @@ void map_module_init();
 upb_map *pbphp_getmap(zval *val, const upb_fielddef *f, upb_arena *arena);
 void pbphp_getmapfield(zval *val, upb_map *arr, const upb_fielddef *f,
                        zval *arena);
-bool pbphp_map_init(upb_map *map, const upb_fielddef *f, zval *val,
-                    upb_arena *arena);
 
 #endif  // PHP_PROTOBUF_MAP_H_

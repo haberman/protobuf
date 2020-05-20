@@ -103,41 +103,6 @@ void pbphp_getrepeatedfield(zval *val, upb_array *arr, const upb_fielddef *f,
   }
 }
 
-bool pbphp_array_init(upb_array *arr, const upb_fielddef *f, zval *val,
-                      upb_arena *arena) {
-  const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
-  upb_fieldtype_t type = upb_fielddef_type(f);
-  HashTable* table;
-  HashPosition pos;
-
-  if (Z_ISREF_P(val)) {
-    ZVAL_DEREF(val);
-  }
-
-  if (Z_TYPE_P(val) != IS_ARRAY) {
-    php_error_docref(NULL, E_USER_ERROR,
-                     "Initializer for a repeated field must be an array.");
-    return false;
-  }
-
-  table = HASH_OF(val);
-  zend_hash_internal_pointer_reset_ex(table, &pos);
-
-  while (true) {
-    zval *zv = zend_hash_get_current_data_ex(table, &pos);
-    upb_msgval val;
-
-    if (!zv) return true;
-
-    if (!pbphp_tomsgval(zv, &val, type, desc, arena)) {
-      return false;
-    }
-
-    upb_array_append(arr, val, arena);
-    zend_hash_move_forward_ex(table, &pos);
-  }
-}
-
 upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
   if (Z_ISREF_P(val)) {
     ZVAL_DEREF(val);
@@ -145,7 +110,7 @@ upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
 
   if (Z_TYPE_P(val) == IS_ARRAY) {
     upb_array *arr = upb_array_new(arena, upb_fielddef_type(f));
-    if (!pbphp_array_init(arr, f, val, arena)) return NULL;
+    if (!pbphp_initarray(arr, f, val, arena)) return NULL;
     return arr;
   } else if (Z_TYPE_P(val) == IS_OBJECT &&
              Z_OBJCE_P(val) == repeated_field_ce) {
@@ -373,6 +338,13 @@ static zend_function_entry repeated_field_methods[] = {
   ZEND_FE_END
 };
 
+static zval *array_get_property_ptr_ptr(zval *object, zval *member, int type,
+                                        void **cache_slot) {
+  return NULL;
+}
+
+static HashTable *array_get_properties(zval *object TSRMLS_DC) { return NULL; }
+
 static void repeated_field_init() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h = &repeated_field_object_handlers;
@@ -388,6 +360,8 @@ static void repeated_field_init() {
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->dtor_obj = repeated_field_dtor;
+  h->get_properties = array_get_properties;
+  h->get_property_ptr_ptr = array_get_property_ptr_ptr;
 }
 
 // -----------------------------------------------------------------------------
@@ -397,7 +371,7 @@ static void repeated_field_init() {
 typedef struct {
   zend_object std;
   // TODO(haberman): does this need to be a zval so it's GC-rooted?
-  RepeatedField* repeated_field;
+  zval repeated_field;
   zend_long position;
 } RepeatedFieldIter;
 
@@ -411,18 +385,31 @@ zend_object* repeated_field_iter_create(zend_class_entry *class_type) {
   RepeatedFieldIter *intern = emalloc(sizeof(RepeatedFieldIter));
   zend_object_std_init(&intern->std, class_type);
   intern->std.handlers = &repeated_field_iter_object_handlers;
-  intern->repeated_field = NULL;
+  ZVAL_NULL(&intern->repeated_field);
   intern->position = 0;
   // Skip object_properties_init(), we don't allow derived classes.
   return &intern->std;
+}
+
+static void repeated_field_iter_dtor(zend_object* obj) {
+  RepeatedFieldIter* intern = (RepeatedFieldIter*)obj;
+  zval_ptr_dtor(&intern->repeated_field);
+  zend_object_std_dtor(&intern->std);
 }
 
 static void RepeatedFieldIter_make(zval *val, zval *repeated_field) {
   RepeatedFieldIter *iter;
   ZVAL_OBJ(val, repeated_field_iter_ce->create_object(repeated_field_iter_ce));
   iter = (RepeatedFieldIter*)Z_OBJ_P(val);
-  iter->repeated_field = (RepeatedField*)Z_OBJ_P(repeated_field);
+  ZVAL_COPY(&iter->repeated_field, repeated_field);
 }
+
+// PHP's iterator protocol is:
+//
+// for ($iter->rewind(); $iter->valid(); $iter->next()) {
+//   $val = $iter->key();
+//   $val = $iter->current();
+// }
 
 PHP_METHOD(RepeatedFieldIter, rewind) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
@@ -431,7 +418,7 @@ PHP_METHOD(RepeatedFieldIter, rewind) {
 
 PHP_METHOD(RepeatedFieldIter, current) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
-  RepeatedField* field = intern->repeated_field;
+  RepeatedField *field = (RepeatedField*)Z_OBJ_P(&intern->repeated_field);
   upb_arena *arena = arena_get(&field->arena);
   upb_array *array = field->array;
   zend_long index = intern->position;
@@ -460,7 +447,8 @@ PHP_METHOD(RepeatedFieldIter, next) {
 
 PHP_METHOD(RepeatedFieldIter, valid) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
-  RETURN_BOOL(intern->position < upb_array_size(intern->repeated_field->array));
+  RepeatedField *field = (RepeatedField*)Z_OBJ_P(&intern->repeated_field);
+  RETURN_BOOL(intern->position < upb_array_size(field->array));
 }
 
 static zend_function_entry repeated_field_iter_methods[] = {
@@ -485,6 +473,7 @@ static void repeated_field_iter_init() {
   repeated_field_iter_ce->create_object = repeated_field_iter_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
+  h->dtor_obj = repeated_field_iter_dtor;
 }
 
 // Module init /////////////////////////////////////////////////////////////////

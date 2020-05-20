@@ -177,6 +177,23 @@ static bool buftoint64(const char *ptr, const char *end, int64_t *val) {
   return true;
 }
 
+void throw_conversion_exception(const char *to, zval *zv) {
+  zval *print = zv;
+  zval tmp;
+  if (Z_TYPE_P(print) != IS_STRING) {
+    ZVAL_COPY(&tmp, zv);
+    print = &tmp;
+    convert_to_string(print);
+  }
+
+  zend_throw_exception_ex(NULL, 0, "Cannot convert '%s' to %s",
+                          Z_STRVAL_P(print), to);
+
+  if (print != zv) {
+    zval_ptr_dtor(print);
+  }
+}
+
 bool pbphp_toi64(zval *php_val, int64_t *i64) {
   switch (Z_TYPE_P(php_val)) {
     case IS_LONG:
@@ -198,7 +215,7 @@ bool pbphp_toi64(zval *php_val, int64_t *i64) {
       return buftoint64(buf, buf + Z_STRLEN_P(php_val), i64);
     }
     default:
-      zend_throw_exception_ex(NULL, 0, "Cannot convert to integer");
+      throw_conversion_exception("integer", php_val);
       return false;
   }
 }
@@ -226,7 +243,7 @@ static bool to_double(zval *php_val, double *dbl) {
     }
     default:
      fail:
-      zend_throw_exception_ex(NULL, 0, "Cannot convert to double");
+      throw_conversion_exception("double", php_val);
       return false;
   }
 }
@@ -254,7 +271,7 @@ static bool to_bool(zval* from, bool* to) {
       }
       return true;
     default:
-      zend_throw_exception_ex(NULL, 0, "Cannot convert to bool");
+      throw_conversion_exception("bool", from);
       return false;
   }
 }
@@ -277,7 +294,7 @@ static bool to_string(zval* from) {
       return true;
     }
     default:
-      zend_throw_exception_ex(NULL, 0, "Cannot convert to string");
+      throw_conversion_exception("string", from);
       return false;
   }
 }
@@ -387,6 +404,164 @@ void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
       PBPHP_ASSERT(desc);
       pbphp_getmsg(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
       break;
+  }
+}
+
+static bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val,
+                               upb_fieldtype_t type, const Descriptor *desc,
+                               upb_arena *arena) {
+  const upb_msgdef *subm = desc ? desc->msgdef : NULL;
+  if (subm && upb_msgdef_iswrapper(subm) && Z_TYPE_P(val) != IS_OBJECT) {
+    // TODO(haberman): support null here?
+    upb_msg *wrapper = upb_msg_new(subm, arena);
+    const upb_fielddef *val_f = upb_msgdef_itof(subm, 1);
+    upb_fieldtype_t type_f = upb_fielddef_type(val_f);
+    upb_msgval msgval;
+    if (!pbphp_tomsgval(val, &msgval, type_f, NULL, arena)) return false;
+    upb_val->msg_val = wrapper;
+    return true;
+  } else {
+    // By handling submessages in this case, we only allow:
+    //   ['foo_submsg': new Foo(['a' => 1])]
+    // not:
+    //   ['foo_submsg': ['a' => 1]]
+    return pbphp_tomsgval(val, upb_val, type, desc, arena);
+  }
+}
+
+bool pbphp_initarray(upb_array *arr, const upb_fielddef *f, zval *val,
+                     upb_arena *arena) {
+  const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+  upb_fieldtype_t type = upb_fielddef_type(f);
+  HashTable* table;
+  HashPosition pos;
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) != IS_ARRAY) {
+    php_error_docref(NULL, E_USER_ERROR,
+                     "Initializer for a repeated field must be an array.");
+    return false;
+  }
+
+  table = HASH_OF(val);
+  zend_hash_internal_pointer_reset_ex(table, &pos);
+
+  while (true) {
+    zval *zv = zend_hash_get_current_data_ex(table, &pos);
+    upb_msgval val;
+
+    if (!zv) return true;
+
+    if (!pbphp_inittomsgval(zv, &val, type, desc, arena)) {
+      return false;
+    }
+
+    upb_array_append(arr, val, arena);
+    zend_hash_move_forward_ex(table, &pos);
+  }
+}
+
+bool pbphp_initmap(upb_map *map, const upb_fielddef *f, zval *val,
+                   upb_arena *arena) {
+  const upb_msgdef *ent = upb_fielddef_msgsubdef(f);
+  const upb_fielddef *key_f = upb_msgdef_itof(ent, 1);
+  const upb_fielddef *val_f = upb_msgdef_itof(ent, 2);
+  upb_fieldtype_t key_type = upb_fielddef_type(key_f);
+  upb_fieldtype_t val_type = upb_fielddef_type(val_f);
+  const Descriptor *desc =
+      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(val_f));
+  HashTable *table;
+  HashPosition pos;
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) != IS_ARRAY) {
+    php_error_docref(NULL, E_USER_ERROR,
+                     "Initializer for a map field must be an array.");
+    return false;
+  }
+
+  table = HASH_OF(val);
+  zend_hash_internal_pointer_reset_ex(table, &pos);
+
+  while (true) {
+    zval php_key;
+    zval *php_val;
+    upb_msgval upb_key;
+    upb_msgval upb_val;
+
+    zend_hash_get_current_key_zval_ex(table, &php_key, &pos);
+    php_val = zend_hash_get_current_data_ex(table, &pos);
+
+    if (!php_val) return true;
+
+    if (!pbphp_tomsgval(&php_key, &upb_key, key_type, NULL, arena) ||
+        !pbphp_inittomsgval(php_val, &upb_val, val_type, desc, arena)) {
+      return false;
+    }
+
+    upb_map_set(map, upb_key, upb_val, arena);
+    zend_hash_move_forward_ex(table, &pos);
+    zval_dtor(&php_key);
+  }
+}
+
+bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
+                   upb_arena *arena) {
+  HashTable* table = HASH_OF(init);
+  HashPosition pos;
+
+  if (Z_ISREF_P(init)) {
+    ZVAL_DEREF(init);
+  }
+
+  if (Z_TYPE_P(init) != IS_ARRAY) {
+    zend_throw_exception_ex(NULL, 0,
+                            "Initializer for a message %s must be an array.",
+                            upb_msgdef_fullname(m));
+    return false;
+  }
+
+  zend_hash_internal_pointer_reset_ex(table, &pos);
+  while (true) {
+    zval key;
+    zval *val;
+    const upb_fielddef *f;
+
+    zend_hash_get_current_key_zval_ex(table, &key, &pos);
+    val = zend_hash_get_current_data_ex(table, &pos);
+
+    if (!val) break;
+
+    if (Z_ISREF_P(val)) {
+      ZVAL_DEREF(val);
+    }
+
+    f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
+
+    if (!f) return false;
+
+    if (upb_fielddef_ismap(f)) {
+      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
+      if (!pbphp_initmap(msgval.map, f, val, arena)) return false;
+    } else if (upb_fielddef_isseq(f)) {
+      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
+      if (!pbphp_initarray(msgval.array, f, val, arena)) return false;
+    } else {
+      const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+      upb_fieldtype_t type = upb_fielddef_type(f);
+      upb_msgval msgval;
+      if (!pbphp_inittomsgval(val, &msgval, type, desc, arena)) return false;
+      upb_msg_set(msg, f, msgval, arena);
+    }
+
+    zend_hash_move_forward_ex(table, &pos);
+    zval_dtor(&key);
   }
 }
 

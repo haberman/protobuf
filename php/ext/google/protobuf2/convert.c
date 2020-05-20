@@ -35,6 +35,8 @@
 // Must be last.
 #include <Zend/zend_exceptions.h>
 
+#include "array.h"
+#include "map.h"
 #include "message.h"
 #include "php-upb.h"
 #include "protobuf.h"
@@ -155,8 +157,21 @@ static bool buftouint64(const char *ptr, const char *end, uint64_t *val) {
     ptr++;
   }
 
+  if (ptr != end) {
+    // In PHP tradition, we allow truncation: "1.1" -> 1.
+    // But we don't allow 'e', eg. '1.1e2' or any other non-numeric chars.
+    size_t size = end - ptr;
+    if (*ptr++ != '.') return false;
+
+    for (;ptr < end; ptr++) {
+      if (*ptr < '0' || *ptr > '9') {
+        return false;
+      }
+    }
+  }
+
   *val = u64;
-  return ptr;
+  return true;
 }
 
 static bool buftoint64(const char *ptr, const char *end, int64_t *val) {
@@ -212,7 +227,11 @@ bool pbphp_toi64(zval *php_val, int64_t *i64) {
       const char *buf = Z_STRVAL_P(php_val);
       // PHP would accept scientific notation here, but we're going to be a
       // little more discerning and only accept pure integers.
-      return buftoint64(buf, buf + Z_STRLEN_P(php_val), i64);
+      bool ok = buftoint64(buf, buf + Z_STRLEN_P(php_val), i64);
+      if (!ok) {
+        throw_conversion_exception("integer", php_val);
+      }
+      return ok;
     }
     default:
       throw_conversion_exception("integer", php_val);
@@ -407,9 +426,8 @@ void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
   }
 }
 
-static bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val,
-                               upb_fieldtype_t type, const Descriptor *desc,
-                               upb_arena *arena) {
+bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val, upb_fieldtype_t type,
+                        const Descriptor *desc, upb_arena *arena) {
   const upb_msgdef *subm = desc ? desc->msgdef : NULL;
   if (subm && upb_msgdef_iswrapper(subm) && Z_TYPE_P(val) != IS_OBJECT) {
     // TODO(haberman): support null here?
@@ -427,41 +445,6 @@ static bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val,
     // not:
     //   ['foo_submsg': ['a' => 1]]
     return pbphp_tomsgval(val, upb_val, type, desc, arena);
-  }
-}
-
-bool pbphp_initarray(upb_array *arr, const upb_fielddef *f, zval *val,
-                     upb_arena *arena) {
-  const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
-  upb_fieldtype_t type = upb_fielddef_type(f);
-  HashTable* table;
-  HashPosition pos;
-
-  if (Z_ISREF_P(val)) {
-    ZVAL_DEREF(val);
-  }
-
-  if (Z_TYPE_P(val) != IS_ARRAY) {
-    php_error_docref(NULL, E_USER_ERROR,
-                     "Initializer for a repeated field must be an array.");
-    return false;
-  }
-
-  table = HASH_OF(val);
-  zend_hash_internal_pointer_reset_ex(table, &pos);
-
-  while (true) {
-    zval *zv = zend_hash_get_current_data_ex(table, &pos);
-    upb_msgval val;
-
-    if (!zv) return true;
-
-    if (!pbphp_inittomsgval(zv, &val, type, desc, arena)) {
-      return false;
-    }
-
-    upb_array_append(arr, val, arena);
-    zend_hash_move_forward_ex(table, &pos);
   }
 }
 
@@ -487,29 +470,6 @@ bool pbphp_initmap(upb_map *map, const upb_fielddef *f, zval *val,
     return false;
   }
 
-  table = HASH_OF(val);
-  zend_hash_internal_pointer_reset_ex(table, &pos);
-
-  while (true) {
-    zval php_key;
-    zval *php_val;
-    upb_msgval upb_key;
-    upb_msgval upb_val;
-
-    zend_hash_get_current_key_zval_ex(table, &php_key, &pos);
-    php_val = zend_hash_get_current_data_ex(table, &pos);
-
-    if (!php_val) return true;
-
-    if (!pbphp_tomsgval(&php_key, &upb_key, key_type, NULL, arena) ||
-        !pbphp_inittomsgval(php_val, &upb_val, val_type, desc, arena)) {
-      return false;
-    }
-
-    upb_map_set(map, upb_key, upb_val, arena);
-    zend_hash_move_forward_ex(table, &pos);
-    zval_dtor(&php_key);
-  }
 }
 
 bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
@@ -533,6 +493,7 @@ bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
     zval key;
     zval *val;
     const upb_fielddef *f;
+    upb_msgval msgval;
 
     zend_hash_get_current_key_zval_ex(table, &key, &pos);
     val = zend_hash_get_current_data_ex(table, &pos);
@@ -552,19 +513,18 @@ bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
     }
 
     if (upb_fielddef_ismap(f)) {
-      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
-      if (!pbphp_initmap(msgval.map, f, val, arena)) return false;
+      msgval.map_val = pbphp_getmap(val, f, arena);
+      if (!msgval.map_val) return false;
     } else if (upb_fielddef_isseq(f)) {
-      upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);
-      if (!pbphp_initarray(msgval.array, f, val, arena)) return false;
+      msgval.array_val = pbphp_getarr(val, f, arena);
+      if (!msgval.array_val) return false;
     } else {
       const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
       upb_fieldtype_t type = upb_fielddef_type(f);
-      upb_msgval msgval;
       if (!pbphp_inittomsgval(val, &msgval, type, desc, arena)) return false;
-      upb_msg_set(msg, f, msgval, arena);
     }
 
+    upb_msg_set(msg, f, msgval, arena);
     zend_hash_move_forward_ex(table, &pos);
     zval_dtor(&key);
   }

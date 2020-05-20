@@ -42,11 +42,9 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
                     const Descriptor *desc, upb_arena *arena);
 void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
                   const Descriptor *desc, zval *arena);
+bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val, upb_fieldtype_t type,
+                        const Descriptor *desc, upb_arena *arena);
 
-bool pbphp_initarray(upb_array *arr, const upb_fielddef *f, zval *val,
-                     upb_arena *arena);
-bool pbphp_initmap(upb_map *map, const upb_fielddef *f, zval *val,
-                   upb_arena *arena);
 bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
                    upb_arena *arena);
 

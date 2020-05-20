@@ -124,8 +124,31 @@ upb_map *pbphp_getmap(zval *val, const upb_fielddef *f, upb_arena *arena) {
 
   if (Z_TYPE_P(val) == IS_ARRAY) {
     upb_map *map = upb_map_new(arena, key_type, val_type);
-    if (!pbphp_initmap(map, f, val, arena)) return NULL;
-    return map;
+    HashTable *table = HASH_OF(val);
+    HashPosition pos;
+
+    zend_hash_internal_pointer_reset_ex(table, &pos);
+
+    while (true) {
+      zval php_key;
+      zval *php_val;
+      upb_msgval upb_key;
+      upb_msgval upb_val;
+
+      zend_hash_get_current_key_zval_ex(table, &php_key, &pos);
+      php_val = zend_hash_get_current_data_ex(table, &pos);
+
+      if (!php_val) return map;
+
+      if (!pbphp_tomsgval(&php_key, &upb_key, key_type, NULL, arena) ||
+          !pbphp_inittomsgval(php_val, &upb_val, val_type, desc, arena)) {
+        return NULL;
+      }
+
+      upb_map_set(map, upb_key, upb_val, arena);
+      zend_hash_move_forward_ex(table, &pos);
+      zval_dtor(&php_key);
+    }
   } else if (Z_TYPE_P(val) == IS_OBJECT && Z_OBJCE_P(val) == map_field_ce) {
     MapField *intern = (MapField*)Z_OBJ_P(val);
 

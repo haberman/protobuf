@@ -110,8 +110,27 @@ upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
 
   if (Z_TYPE_P(val) == IS_ARRAY) {
     upb_array *arr = upb_array_new(arena, upb_fielddef_type(f));
-    if (!pbphp_initarray(arr, f, val, arena)) return NULL;
-    return arr;
+    HashTable *table = HASH_OF(val);
+    HashPosition pos;
+    upb_fieldtype_t type = upb_fielddef_type(f);
+    const Descriptor *desc =
+        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+
+    zend_hash_internal_pointer_reset_ex(table, &pos);
+
+    while (true) {
+      zval *zv = zend_hash_get_current_data_ex(table, &pos);
+      upb_msgval val;
+
+      if (!zv) return arr;
+
+      if (!pbphp_inittomsgval(zv, &val, type, desc, arena)) {
+        return NULL;
+      }
+
+      upb_array_append(arr, val, arena);
+      zend_hash_move_forward_ex(table, &pos);
+    }
   } else if (Z_TYPE_P(val) == IS_OBJECT &&
              Z_OBJCE_P(val) == repeated_field_ce) {
     RepeatedField *intern = (RepeatedField*)Z_OBJ_P(val);

@@ -7596,7 +7596,7 @@ static void jsonenc_any(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
     jsonenc_err(e, "Error decoding message in Any");
   }
 
-  jsonenc_putstr(e, "{\"@type\": ");
+  jsonenc_putstr(e, "{\"@type\":");
   jsonenc_string(e, type_url);
   jsonenc_putstr(e, ", ");
 
@@ -7605,7 +7605,7 @@ static void jsonenc_any(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
     jsonenc_msgfields(e, any, any_m);
   } else {
     /* Well-known type: {"@type": "...", "value": <well-known encoding>} */
-    jsonenc_putstr(e, "value: ");
+    jsonenc_putstr(e, "value:");
     jsonenc_msgfield(e, any, any_m);
   }
 
@@ -7678,7 +7678,7 @@ static void jsonenc_struct(jsonenc *e, const upb_msg *msg,
 
       jsonenc_putsep(e, ", ", &first);
       jsonenc_string(e, key.str_val);
-      jsonenc_putstr(e, ": ");
+      jsonenc_putstr(e, ":");
       jsonenc_value(e, val.msg_val, upb_fielddef_msgsubdef(value_f));
     }
   }
@@ -7846,7 +7846,7 @@ static void jsonenc_mapkey(jsonenc *e, upb_msgval val, const upb_fielddef *f) {
       UPB_UNREACHABLE();
   }
 
-  jsonenc_putstr(e, "\": ");
+  jsonenc_putstr(e, "\":");
 }
 
 static void jsonenc_array(jsonenc *e, const upb_array *arr,
@@ -7894,7 +7894,7 @@ static void jsonenc_fieldval(jsonenc *e, const upb_fielddef *f,
   }
 
   jsonenc_putsep(e, ", ", first);
-  jsonenc_printf(e, "\"%s\": ", name);
+  jsonenc_printf(e, "\"%s\":", name);
 
   if (upb_fielddef_ismap(f)) {
     jsonenc_map(e, val.map_val, f);

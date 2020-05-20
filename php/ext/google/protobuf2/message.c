@@ -442,9 +442,7 @@ PHP_METHOD(Message, writeWrapperValue) {
     const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
     upb_msg *wrapper;
 
-    if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(val_f),
-                        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f)),
-                        arena)) {
+    if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(val_f), NULL, arena)) {
       // Error already set.
       return;
     }

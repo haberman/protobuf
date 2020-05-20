@@ -177,7 +177,7 @@ static bool buftoint64(const char *ptr, const char *end, int64_t *val) {
   return true;
 }
 
-void throw_conversion_exception(const char *to, zval *zv) {
+static void throw_conversion_exception(const char *to, zval *zv) {
   zval *print = zv;
   zval tmp;
   if (Z_TYPE_P(print) != IS_STRING) {
@@ -418,6 +418,7 @@ static bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val,
     upb_fieldtype_t type_f = upb_fielddef_type(val_f);
     upb_msgval msgval;
     if (!pbphp_tomsgval(val, &msgval, type_f, NULL, arena)) return false;
+    upb_msg_set(wrapper, val_f, msgval, arena);
     upb_val->msg_val = wrapper;
     return true;
   } else {
@@ -544,7 +545,11 @@ bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
 
     f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
 
-    if (!f) return false;
+    if (!f) {
+      zend_throw_exception_ex(NULL, 0,
+                              "No such field %s", Z_STRVAL_P(&key));
+      return false;
+    }
 
     if (upb_fielddef_ismap(f)) {
       upb_mutmsgval msgval = upb_msg_mutable(msg, f, arena);

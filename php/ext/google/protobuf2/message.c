@@ -150,7 +150,6 @@ static zval *message_read_property(zval *obj, zval *member, int type,
 
   if (!f) return NULL;
 
-
   if (upb_fielddef_ismap(f)) {
     upb_mutmsgval msgval = upb_msg_mutable(intern->msg, f, arena);
     pbphp_getmapfield(rv, msgval.map, f, &intern->arena);

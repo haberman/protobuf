@@ -335,8 +335,8 @@ PHP_METHOD(Message, mergeFromJsonString) {
 
   upb_status_clear(&status);
   if (!upb_json_decode(data_copy, data_len, intern->msg, intern->desc->msgdef,
-                       descriptor_pool_getsymtab(), 0, arena, &status)) {
-    zend_throw_exception_ex(NULL, 0, "Error occurred during parsing",
+                       descriptor_pool_getsymtab(), options, arena, &status)) {
+    zend_throw_exception_ex(NULL, 0, "Error occurred during parsing: %s",
                             upb_status_errmsg(&status));
     return;
   }

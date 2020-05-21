@@ -101,7 +101,7 @@ void pbphp_getmapfield(zval *val, upb_map *map, const upb_fielddef *f,
     intern->map = map;
     intern->key_type = upb_fielddef_type(key_f);
     intern->val_type = upb_fielddef_type(val_f);
-    intern->desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(val_f));
+    intern->desc = Descriptor_GetFromFieldDef(val_f);
     // Skip object_properties_init(), we don't allow derived classes.
     pbphp_cacheadd(intern->map, &intern->std);
     ZVAL_OBJ(val, &intern->std);
@@ -115,8 +115,7 @@ upb_map *pbphp_getmap(zval *val, const upb_fielddef *f, upb_arena *arena) {
   const upb_fielddef *val_f = upb_msgdef_itof(ent, 2);
   upb_fieldtype_t key_type = upb_fielddef_type(key_f);
   upb_fieldtype_t val_type = upb_fielddef_type(val_f);
-  const Descriptor *desc =
-      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(val_f));
+  const Descriptor *desc = Descriptor_GetFromFieldDef(val_f);
 
   if (Z_ISREF_P(val)) {
     ZVAL_DEREF(val);
@@ -185,7 +184,7 @@ PHP_METHOD(MapField, __construct) {
 
   intern->key_type = pbphp_dtype_to_type(key_type);
   intern->val_type = pbphp_dtype_to_type(val_type);
-  intern->desc = pupb_getdesc(klass);
+  intern->desc = Descriptor_GetFromClassEntry(klass);
 
   // Check that the key type is an allowed type.
   switch (intern->key_type) {

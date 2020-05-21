@@ -159,8 +159,7 @@ static zval *message_read_property(zval *obj, zval *member, int type,
   } else {
     upb_msgval msgval = upb_msg_get(intern->msg, f);
     upb_fieldtype_t type = upb_fielddef_type(f);
-    const Descriptor *subdesc =
-        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
     pbphp_tozval(msgval, rv, upb_fielddef_type(f), subdesc, &intern->arena);
   }
 
@@ -179,8 +178,7 @@ static void pbphp_msg_set(Message *intern, const upb_fielddef *f, zval *val) {
     if (!msgval.array_val) return;
   } else {
     upb_fieldtype_t type = upb_fielddef_type(f);
-    const Descriptor *subdesc =
-        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
     bool ok = pbphp_tomsgval(val, &msgval, type, subdesc, arena);
     if (!ok) return;
   }
@@ -209,7 +207,7 @@ static HashTable* message_get_properties(zval* object TSRMLS_DC) {
 
 PHP_METHOD(Message, __construct) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
-  const Descriptor* desc = pupb_getdesc(Z_OBJCE_P(getThis()));
+  const Descriptor* desc = Descriptor_GetFromClassEntry(Z_OBJCE_P(getThis()));
   const upb_msgdef *msgdef = desc->msgdef;
   upb_arena *arena = arena_get(&intern->arena);
   zval *init_arr;
@@ -495,8 +493,7 @@ PHP_METHOD(Message, readOneof) {
 
   {
     upb_msgval msgval = upb_msg_get(intern->msg, f);
-    const Descriptor *subdesc =
-        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
     pbphp_tozval(msgval, &ret, upb_fielddef_type(f), subdesc, &intern->arena);
   }
 
@@ -519,8 +516,7 @@ PHP_METHOD(Message, writeOneof) {
   f = upb_msgdef_itof(intern->desc->msgdef, field_num);
 
   if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(f),
-                      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f)),
-                      arena)) {
+                      Descriptor_GetFromFieldDef(f), arena)) {
     return;
   }
 

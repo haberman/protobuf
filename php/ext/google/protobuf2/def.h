@@ -54,7 +54,9 @@ typedef struct Descriptor {
   zend_class_entry *class_entry;
 } Descriptor;
 
-const Descriptor* pupb_getdesc(zend_class_entry *ce);
-const Descriptor* pupb_getdesc_from_msgdef(const upb_msgdef *m);
+void Descriptor_FromClassEntry(zval *val, zend_class_entry *ce);
+const Descriptor* Descriptor_GetFromClassEntry(zend_class_entry *ce);
+const Descriptor* Descriptor_GetFromMessageDef(const upb_msgdef *m);
+const Descriptor* Descriptor_GetFromFieldDef(const upb_fielddef *f);
 
 #endif  // PHP_PROTOBUF_DEF_H_

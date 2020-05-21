@@ -96,7 +96,7 @@ void pbphp_getrepeatedfield(zval *val, upb_array *arr, const upb_fielddef *f,
     ZVAL_COPY(&intern->arena, arena);
     intern->array = arr;
     intern->type = upb_fielddef_type(f);
-    intern->desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    intern->desc = Descriptor_GetFromFieldDef(f);
     // Skip object_properties_init(), we don't allow derived classes.
     pbphp_cacheadd(intern->array, &intern->std);
     ZVAL_OBJ(val, &intern->std);
@@ -113,8 +113,7 @@ upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
     HashTable *table = HASH_OF(val);
     HashPosition pos;
     upb_fieldtype_t type = upb_fielddef_type(f);
-    const Descriptor *desc =
-        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    const Descriptor *desc = Descriptor_GetFromFieldDef(f);
 
     zend_hash_internal_pointer_reset_ex(table, &pos);
 
@@ -134,8 +133,7 @@ upb_array *pbphp_getarr(zval *val, const upb_fielddef *f, upb_arena *arena) {
   } else if (Z_TYPE_P(val) == IS_OBJECT &&
              Z_OBJCE_P(val) == repeated_field_ce) {
     RepeatedField *intern = (RepeatedField*)Z_OBJ_P(val);
-    const Descriptor *desc =
-        pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+    const Descriptor *desc = Descriptor_GetFromFieldDef(f);
 
     if (intern->type != upb_fielddef_type(f) || intern->desc != desc) {
       php_error_docref(NULL, E_USER_ERROR,
@@ -166,7 +164,7 @@ PHP_METHOD(RepeatedField, __construct) {
   }
 
   intern->type = pbphp_dtype_to_type(type);
-  intern->desc = pupb_getdesc(klass);
+  intern->desc = Descriptor_GetFromClassEntry(klass);
 
   if (intern->type == UPB_TYPE_MESSAGE && klass == NULL) {
     php_error_docref(NULL, E_USER_ERROR,

@@ -455,8 +455,7 @@ bool pbphp_initmap(upb_map *map, const upb_fielddef *f, zval *val,
   const upb_fielddef *val_f = upb_msgdef_itof(ent, 2);
   upb_fieldtype_t key_type = upb_fielddef_type(key_f);
   upb_fieldtype_t val_type = upb_fielddef_type(val_f);
-  const Descriptor *desc =
-      pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(val_f));
+  const Descriptor *desc = Descriptor_GetFromFieldDef(val_f);
   HashTable *table;
   HashPosition pos;
 
@@ -519,7 +518,7 @@ bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
       msgval.array_val = pbphp_getarr(val, f, arena);
       if (!msgval.array_val) return false;
     } else {
-      const Descriptor *desc = pupb_getdesc_from_msgdef(upb_fielddef_msgsubdef(f));
+      const Descriptor *desc = Descriptor_GetFromFieldDef(f);
       upb_fieldtype_t type = upb_fielddef_type(f);
       if (!pbphp_inittomsgval(val, &msgval, type, desc, arena)) return false;
     }

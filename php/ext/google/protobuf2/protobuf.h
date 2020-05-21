@@ -38,6 +38,11 @@
 
 const zval *get_generated_pool();
 
+#if PHP_VERSION_ID < 70300
+#define GC_ADDREF(h) ++GC_REFCOUNT(h)
+#define GC_DELREF(h) --GC_REFCOUNT(h)
+#endif
+
 // ptr -> PHP object cache. This is a weak map that caches lazily-created
 // wrapper objects around upb types:
 //  * upb_msg* -> Message

@@ -32,7 +32,7 @@ fi
 # Compile c extension
 pushd  ../ext/google/protobuf2
 $PHP_BASE/bin/phpize
-./configure --with-php-config=$PHP_BASE/bin/php-config CFLAGS="-O0 -g -DPBPHP_ENABLE_ASSERTS"
+./configure --with-php-config=$PHP_BASE/bin/php-config CFLAGS="-O3 -g -DPBPHP_ENABLE_ASSERTS"
 make clean && make -j$(nproc)
 popd
 

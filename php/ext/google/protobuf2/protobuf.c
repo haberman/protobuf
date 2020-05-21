@@ -198,7 +198,7 @@ bool pbphp_cacheget(const void *upb_obj, zval *val) {
   zend_object *obj = zend_hash_index_find_ptr(&PROTOBUF_G(object_cache), k);
 
   if (obj) {
-    ++GC_REFCOUNT(obj);
+    GC_ADDREF(obj);
     ZVAL_OBJ(val, obj);
     return true;
   } else {

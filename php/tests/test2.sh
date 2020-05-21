@@ -27,14 +27,7 @@ fi
 [ -f $PHPUNIT ] || wget https://phar.phpunit.de/$PHPUNIT
 
 ./generate_protos.sh
-(cd .. && ./make-preload.py)
-
-# Compile c extension
-pushd  ../ext/google/protobuf2
-$PHP_BASE/bin/phpize
-./configure --with-php-config=$PHP_BASE/bin/php-config CFLAGS="-O3 -g -DPBPHP_ENABLE_ASSERTS"
-make clean && make -j$(nproc)
-popd
+(cd .. && ./compile_extension2.sh $PHP_BASE --debug)
 
 #export ZEND_DONT_UNLOAD_MODULES=1
 #export USE_ZEND_ALLOC=0

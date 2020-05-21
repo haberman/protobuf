@@ -7602,14 +7602,14 @@ static void jsonenc_any(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
 
   jsonenc_putstr(e, "{\"@type\":");
   jsonenc_string(e, type_url);
-  jsonenc_putstr(e, ", ");
+  jsonenc_putstr(e, ",");
 
   if (upb_msgdef_wellknowntype(any_m) == UPB_WELLKNOWN_UNSPECIFIED) {
     /* Regular messages: {"@type": "...", "foo": 1, "bar": 2} */
     jsonenc_msgfields(e, any, any_m);
   } else {
     /* Well-known type: {"@type": "...", "value": <well-known encoding>} */
-    jsonenc_putstr(e, "value:");
+    jsonenc_putstr(e, "\"value\":");
     jsonenc_msgfield(e, any, any_m);
   }
 
@@ -7897,7 +7897,7 @@ static void jsonenc_fieldval(jsonenc *e, const upb_fielddef *f,
     name = upb_fielddef_jsonname(f);
   }
 
-  jsonenc_putsep(e, ", ", first);
+  jsonenc_putsep(e, ",", first);
   jsonenc_printf(e, "\"%s\":", name);
 
   if (upb_fielddef_ismap(f)) {

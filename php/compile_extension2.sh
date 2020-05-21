@@ -7,6 +7,8 @@ PHP_BASE=$1
 
 if [ "$2" = "--debug" ]; then
   CFLAGS="-O0 -g -DPBPHP_ENABLE_ASSERTS"
+else
+  CFLAGS="-O2 -g"
 fi
 
 ./make-preload.py

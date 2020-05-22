@@ -141,13 +141,44 @@ static zend_object *enum_descriptor_create(zend_class_entry *class_type) {
   return NULL;
 }
 
-static void EnumDescriptor_GetFromEnumDef(zval *val, const upb_enumdef *e) {
-  EnumDescriptor *intern = emalloc(sizeof(EnumDescriptor));
-  zend_object_std_init(&intern->std, enum_value_descriptor_ce);
-  intern->std.handlers = &enum_value_descriptor_object_handlers;
-  intern->enumdef = e;
-  // Skip object_properties_init(), we don't allow derived classes.
-  ZVAL_OBJ(val, &intern->std);
+void EnumDescriptor_FromClassEntry(zval *val, zend_class_entry *ce) {
+  if (ce == NULL) {
+    ZVAL_NULL(val);
+    return;
+  }
+
+  if (!pbphp_cacheget(ce, val)) {
+    EnumDescriptor* ret = emalloc(sizeof(EnumDescriptor));
+    zend_object_std_init(&ret->std, enum_descriptor_ce);
+    ret->std.handlers = &enum_descriptor_object_handlers;
+    ret->enumdef = pbphp_namemap_get(ce);
+    pbphp_cacheadd(ce, &ret->std);
+
+    // Prevent this from ever being collected (within a request).
+    GC_ADDREF(&ret->std);
+
+    ZVAL_OBJ(val, &ret->std);
+  }
+}
+
+void EnumDescriptor_FromEnumDef(zval *val, const upb_enumdef *m) {
+  if (m) {
+    char *classname =
+        pbphp_get_classname(upb_enumdef_file(m), upb_enumdef_fullname(m));
+    zend_string *str = zend_string_init(classname, strlen(classname), 0);
+    zend_class_entry *ce = zend_lookup_class(str);  // May autoload the class.
+
+    zend_string_release (str);
+
+    if (!ce) {
+      zend_error(E_ERROR, "Couldn't load generated class %s", classname);
+    }
+
+    free(classname);
+    EnumDescriptor_FromClassEntry(val, ce);
+  } else {
+    ZVAL_NULL(val);
+  }
 }
 
 PHP_METHOD(EnumDescriptor, getValue) {
@@ -183,9 +214,14 @@ PHP_METHOD(EnumDescriptor, getValueCount) {
   RETURN_LONG(upb_enumdef_numvals(intern->enumdef));
 }
 
+PHP_METHOD(EnumDescriptor, getPublicDescriptor) {
+  RETURN_ZVAL(getThis(), 1, 0);
+}
+
 static zend_function_entry enum_descriptor_methods[] = {
-  PHP_ME(EnumDescriptor, getValue, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(EnumDescriptor, getPublicDescriptor, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(EnumDescriptor, getValueCount, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(EnumDescriptor, getValue, NULL, ZEND_ACC_PUBLIC)
   ZEND_FE_END
 };
 
@@ -371,6 +407,7 @@ PHP_METHOD(FieldDescriptor, isMap) {
 PHP_METHOD(FieldDescriptor, getEnumType) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   const upb_enumdef *e = upb_fielddef_enumsubdef(intern->fielddef);
+  EnumDescriptor *desc;
   zval ret;
 
   if (!e) {
@@ -380,7 +417,7 @@ PHP_METHOD(FieldDescriptor, getEnumType) {
     return;
   }
 
-  EnumDescriptor_GetFromEnumDef(&ret, e);
+  EnumDescriptor_FromEnumDef(&ret, e);
   RETURN_ZVAL(&ret, 1, 0);
 }
 
@@ -476,6 +513,20 @@ Descriptor* Descriptor_GetFromClassEntry(zend_class_entry *ce) {
 
 Descriptor* Descriptor_GetFromMessageDef(const upb_msgdef *m) {
   if (m) {
+    if (upb_msgdef_mapentry(m)) {
+      // A bit of a hack, since map entries don't have classes.
+      Descriptor* ret = emalloc(sizeof(Descriptor));
+      zend_object_std_init(&ret->std, descriptor_ce);
+      ret->std.handlers = &descriptor_object_handlers;
+      ret->class_entry = NULL;
+      ret->msgdef = m;
+
+      // Prevent this from ever being collected (within a request).
+      GC_ADDREF(&ret->std);
+
+      return ret;
+    }
+
     char *classname =
         pbphp_get_classname(upb_msgdef_file(m), upb_msgdef_fullname(m));
     zend_string *str = zend_string_init(classname, strlen(classname), 0);
@@ -678,6 +729,31 @@ PHP_METHOD(DescriptorPool, getDescriptorByClassName) {
   }
 }
 
+PHP_METHOD(DescriptorPool, getEnumDescriptorByClassName) {
+  char *classname = NULL;
+  zend_long classname_len;
+  zend_class_entry *ce;
+  zend_string *str;
+  EnumDescriptor *desc = NULL;
+  zval ret;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &classname,
+                            &classname_len) == FAILURE) {
+    return;
+  }
+
+  str = zend_string_init(classname, strlen(classname), 0);
+  ce = zend_lookup_class(str);  // May autoload the class.
+  zend_string_release (str);
+
+  if (!ce) {
+    RETURN_NULL();
+  }
+
+  EnumDescriptor_FromClassEntry(&ret, ce);
+  RETURN_ZVAL(&ret, 1, 0);
+}
+
 PHP_METHOD(DescriptorPool, getDescriptorByProtoName) {
   DescriptorPool *intern = GetPool(getThis());
   char *protoname = NULL;
@@ -795,6 +871,7 @@ static zend_function_entry descriptor_pool_methods[] = {
          ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
   PHP_ME(DescriptorPool, getDescriptorByClassName, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(DescriptorPool, getDescriptorByProtoName, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(DescriptorPool, getEnumDescriptorByClassName, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(DescriptorPool, internalAddGeneratedFile, NULL, ZEND_ACC_PUBLIC)
   ZEND_FE_END
 };
@@ -826,50 +903,3 @@ void def_module_init() {
   field_descriptor_init();
   descriptor_init();
 }
-
-#if 0
-PHP_METHOD(DescriptorPool, getEnumDescriptorByClassName) {
-  char *classname = NULL;
-  PHP_PROTO_SIZE classname_len;
-
-  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &classname,
-                            &classname_len) == FAILURE) {
-    return;
-  }
-
-  PHP_PROTO_CE_DECLARE pce;
-  if (php_proto_zend_lookup_class(classname, classname_len, &pce) ==
-      FAILURE) {
-    RETURN_NULL();
-  }
-
-  zend_class_entry* ce = PHP_PROTO_CE_UNREF(pce);
-
-  PHP_PROTO_HASHTABLE_VALUE desc_php = get_ce_obj(ce);
-  if (desc_php == NULL) {
-    EnumDescriptorInternal* intern = get_class_enumdesc(ZSTR_VAL(ce->name));
-    register_class(intern, true TSRMLS_CC);
-
-    if (intern == NULL) {
-      RETURN_NULL();
-    }
-
-    desc_php =
-        enum_descriptor_type->create_object(enum_descriptor_type TSRMLS_CC);
-    GC_DELREF(desc_php);
-    EnumDescriptor* desc = UNBOX_HASHTABLE_VALUE(EnumDescriptor, desc_php);
-    desc->intern = intern;
-    add_def_obj(intern->enumdef, desc_php);
-    add_ce_obj(ce, desc_php);
-  }
-
-  zend_class_entry* instance_ce = HASHTABLE_VALUE_CE(desc_php);
-
-  if (!instanceof_function(instance_ce, enum_descriptor_type TSRMLS_CC)) {
-    RETURN_NULL();
-  }
-
-  GC_ADDREF(desc_php);
-  RETURN_OBJ(desc_php);
-}
-#endif

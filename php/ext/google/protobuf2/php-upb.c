@@ -1251,6 +1251,11 @@ bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
   return true;
 }
 
+void _upb_msg_discardunknown_shallow(upb_msg *msg) {
+  upb_msg_internal *in = upb_msg_getinternal(msg);
+  in->unknown_len = 0;
+}
+
 const char *upb_msg_getunknown(const upb_msg *msg, size_t *len) {
   const upb_msg_internal *in = upb_msg_getinternal_const(msg);
   *len = in->unknown_len;
@@ -5755,6 +5760,56 @@ bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
   }
   *iter = i;
   return false;
+}
+
+bool _upb_msg_discardunknown(upb_msg *msg, const upb_msgdef *m, int depth) {
+  size_t iter = UPB_MSG_BEGIN;
+  const upb_fielddef *f;
+  upb_msgval val;
+  bool ret = true;
+
+  if (--depth == 0) return false;
+
+  _upb_msg_discardunknown_shallow(msg);
+
+  while (upb_msg_next(msg, m, NULL /*ext_pool*/, &f, &val, &iter)) {
+    const upb_msgdef *subm = upb_fielddef_msgsubdef(f);
+    if (!subm) continue;
+    if (upb_fielddef_ismap(f)) {
+      const upb_fielddef *val_f = upb_msgdef_itof(subm, 2);
+      const upb_msgdef *val_m = upb_fielddef_msgsubdef(val_f);
+      upb_map *map = (upb_map*)val.map_val;
+      size_t iter = UPB_MAP_BEGIN;
+
+      if (!val_m) continue;
+
+      while (upb_mapiter_next(map, &iter)) {
+        upb_msgval map_val = upb_mapiter_value(map, iter);
+        if (!_upb_msg_discardunknown((upb_msg*)map_val.msg_val, val_m, depth)) {
+          ret = false;
+        }
+      }
+    } else if (upb_fielddef_isseq(f)) {
+      const upb_array *arr = val.array_val;
+      size_t i, n = upb_array_size(arr);
+      for (i = 0; i < n; i++) {
+        upb_msgval elem = upb_array_get(arr, i);
+        if (!_upb_msg_discardunknown((upb_msg*)elem.msg_val, subm, depth)) {
+          ret = false;
+        }
+      }
+    } else {
+      if (!_upb_msg_discardunknown((upb_msg*)val.msg_val, subm, depth)) {
+        ret = false;
+      }
+    }
+  }
+
+  return ret;
+}
+
+bool upb_msg_discardunknown(upb_msg *msg, const upb_msgdef *m, int maxdepth) {
+  return _upb_msg_discardunknown(msg, m, maxdepth);
 }
 
 /** upb_array *****************************************************************/

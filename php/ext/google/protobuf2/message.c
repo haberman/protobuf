@@ -225,6 +225,11 @@ PHP_METHOD(Message, __construct) {
   }
 }
 
+PHP_METHOD(Message, discardUnknownFields) {
+  Message* intern = (Message*)Z_OBJ_P(getThis());
+  upb_msg_discardunknown(intern->msg, intern->desc->msgdef, 64);
+}
+
 PHP_METHOD(Message, clear) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   upb_msg_clear(intern->msg, intern->desc->msgdef);
@@ -525,7 +530,7 @@ PHP_METHOD(Message, writeOneof) {
 
 static  zend_function_entry message_methods[] = {
   PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)
-  //PHP_ME(Message, discardUnknownFields, NULL, ZEND_ACC_PUBLIC)
+  PHP_ME(Message, discardUnknownFields, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, serializeToString, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, mergeFromString, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, serializeToJsonString, NULL, ZEND_ACC_PUBLIC)

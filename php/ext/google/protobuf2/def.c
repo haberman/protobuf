@@ -124,17 +124,26 @@ static zend_object *enum_descriptor_create(zend_class_entry *class_type) {
 }
 
 void EnumDescriptor_FromClassEntry(zval *val, zend_class_entry *ce) {
+  // To differentiate enums from classes, we pointer-tag the class entry.
+  void* key = (void*)((uintptr_t)ce | 1);
+  PBPHP_ASSERT(key != ce);
+
   if (ce == NULL) {
     ZVAL_NULL(val);
     return;
   }
 
-  if (!pbphp_cacheget(ce, val)) {
+  if (!pbphp_cacheget(key, val)) {
+    const upb_enumdef *e = NameMap_GetEnum(ce);
+    if (!e) {
+      ZVAL_NULL(val);
+      return;
+    }
     EnumDescriptor* ret = emalloc(sizeof(EnumDescriptor));
     zend_object_std_init(&ret->std, enum_descriptor_ce);
     ret->std.handlers = &enum_descriptor_object_handlers;
-    ret->enumdef = pbphp_namemap_get(ce);
-    pbphp_cacheadd(ce, &ret->std);
+    ret->enumdef = e;
+    pbphp_cacheadd(key, &ret->std);
 
     // Prevent this from ever being collected (within a request).
     GC_ADDREF(&ret->std);
@@ -495,11 +504,16 @@ void Descriptor_FromClassEntry(zval *val, zend_class_entry *ce) {
   }
 
   if (!pbphp_cacheget(ce, val)) {
+    const upb_msgdef *msgdef = NameMap_GetMessage(ce);
+    if (!msgdef) {
+      ZVAL_NULL(val);
+      return;
+    }
     Descriptor* ret = emalloc(sizeof(Descriptor));
     zend_object_std_init(&ret->std, descriptor_ce);
     ret->std.handlers = &descriptor_object_handlers;
     ret->class_entry = ce;
-    ret->msgdef = pbphp_namemap_get(ce);
+    ret->msgdef = msgdef;
     pbphp_cacheadd(ce, &ret->std);
 
     // Prevent this from ever being collected (within a request).
@@ -742,6 +756,7 @@ PHP_METHOD(DescriptorPool, getDescriptorByClassName) {
   zend_class_entry *ce;
   zend_string *str;
   Descriptor *desc = NULL;
+  zval ret;
 
   if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &classname,
                             &classname_len) == FAILURE) {
@@ -756,15 +771,8 @@ PHP_METHOD(DescriptorPool, getDescriptorByClassName) {
     RETURN_NULL();
   }
 
-  desc = (Descriptor*)Descriptor_GetFromClassEntry(ce);
-
-  if (desc) {
-    zval ret;
-    ZVAL_OBJ(&ret, &desc->std);
-    RETURN_ZVAL(&ret, 1, 0);
-  } else {
-    RETURN_NULL();
-  }
+  Descriptor_FromClassEntry(&ret, ce);
+  RETURN_ZVAL(&ret, 1, 0);
 }
 
 PHP_METHOD(DescriptorPool, getEnumDescriptorByClassName) {
@@ -837,13 +845,11 @@ bool depends_on_descriptor(const google_protobuf_FileDescriptorProto* file) {
 static void add_name_mappings(const upb_filedef *file) {
   size_t i;
   for (i = 0; i < upb_filedef_msgcount(file); i++) {
-    const upb_msgdef *m = upb_filedef_msg(file, i);
-    pbphp_namemap_add(file, upb_msgdef_fullname(m), m);
+    NameMap_AddMessage(upb_filedef_msg(file, i));
   }
 
   for (i = 0; i < upb_filedef_enumcount(file); i++) {
-    const upb_enumdef *e = upb_filedef_enum(file, i);
-    pbphp_namemap_add(file, upb_enumdef_fullname(e), e);
+    NameMap_AddEnum(upb_filedef_enum(file, i));
   }
 }
 

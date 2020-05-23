@@ -60,9 +60,10 @@ bool pbphp_cacheget(const void *key, zval *val);
 // enumdef by PHP class, we can't turn the class name into a pb_name.
 //  * php_class_name -> upb_msgdef*
 //  * php_class_name -> upb_enumdef*
-void pbphp_namemap_add(const upb_filedef *file, const char *pb_name,
-                       const void *val);
-const void *pbphp_namemap_get(zend_class_entry *ce);
+void NameMap_AddMessage(const upb_msgdef *m);
+void NameMap_AddEnum(const upb_enumdef *m);
+const upb_msgdef *NameMap_GetMessage(zend_class_entry *ce);
+const upb_enumdef *NameMap_GetEnum(zend_class_entry *ce);
 
 // We need our own assert() because PHP takes control of NDEBUG in its headers.
 #ifdef PBPHP_ENABLE_ASSERTS

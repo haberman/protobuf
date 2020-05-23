@@ -44,7 +44,8 @@ ZEND_BEGIN_MODULE_GLOBALS(protobuf)
   HashTable object_cache;
 
   // Name cache (see interface in protobuf.h).
-  HashTable name_cache;
+  HashTable name_msg_cache;
+  HashTable name_enum_cache;
 ZEND_END_MODULE_GLOBALS(protobuf)
 
 ZEND_DECLARE_MODULE_GLOBALS(protobuf)
@@ -129,7 +130,8 @@ static PHP_RINIT_FUNCTION(protobuf) {
                    NULL, "autoload_register.php");
 
   zend_hash_init(&PROTOBUF_G(object_cache), 64, NULL, NULL, 0);
-  zend_hash_init(&PROTOBUF_G(name_cache), 64, NULL, NULL, 0);
+  zend_hash_init(&PROTOBUF_G(name_msg_cache), 64, NULL, NULL, 0);
+  zend_hash_init(&PROTOBUF_G(name_enum_cache), 64, NULL, NULL, 0);
 
   return SUCCESS;
 }
@@ -143,7 +145,8 @@ static PHP_RSHUTDOWN_FUNCTION(protobuf) {
 
   zval_dtor(&PROTOBUF_G(generated_pool));
   zend_hash_destroy(&PROTOBUF_G(object_cache));
-  zend_hash_destroy(&PROTOBUF_G(name_cache));
+  zend_hash_destroy(&PROTOBUF_G(name_msg_cache));
+  zend_hash_destroy(&PROTOBUF_G(name_enum_cache));
 
   return SUCCESS;
 }
@@ -211,27 +214,38 @@ bool pbphp_cacheget(const void *upb_obj, zval *val) {
 // Name Cache.
 // -----------------------------------------------------------------------------
 
-void pbphp_namemap_add(const upb_filedef *file, const char *pb_name,
-                       const void *val) {
-  char *key = pbphp_get_classname(file, pb_name);
-  zend_hash_str_add_ptr(&PROTOBUF_G(name_cache), key, strlen(key), (void*)val);
-  free(key);
+void NameMap_AddMessage(const upb_msgdef *m) {
+  char *k = pbphp_get_classname(upb_msgdef_file(m), upb_msgdef_fullname(m));
+  zend_hash_str_add_ptr(&PROTOBUF_G(name_msg_cache), k, strlen(k), (void*)m);
+  free(k);
 }
 
-const void *pbphp_namemap_get(zend_class_entry *ce) {
-  const void *ret = zend_hash_find_ptr(&PROTOBUF_G(name_cache), ce->name);
+void NameMap_AddEnum(const upb_enumdef *e) {
+  char *k = pbphp_get_classname(upb_enumdef_file(e), upb_enumdef_fullname(e));
+  zend_hash_str_add_ptr(&PROTOBUF_G(name_enum_cache), k, strlen(k), (void*)e);
+  free(k);
+}
 
-  if (!ret) {
+const upb_msgdef *NameMap_GetMessage(zend_class_entry *ce) {
+  const upb_msgdef *ret =
+      zend_hash_find_ptr(&PROTOBUF_G(name_msg_cache), ce->name);
+
+  if (!ret && ce->create_object) {
     zval tmp;
-    zval ret;
+    zval zv;
     ZVAL_OBJ(&tmp, ce->create_object(ce));
-    zend_call_method_with_0_params(&tmp, ce, NULL, "__construct", &ret);
+    zend_call_method_with_0_params(&tmp, ce, NULL, "__construct", &zv);
     zval_ptr_dtor(&tmp);
-    zval_ptr_dtor(&ret);
+    zval_ptr_dtor(&zv);
+    ret = zend_hash_find_ptr(&PROTOBUF_G(name_msg_cache), ce->name);
   }
 
-  ret = zend_hash_find_ptr(&PROTOBUF_G(name_cache), ce->name);
-  PBPHP_ASSERT(ret);
+  return ret;
+}
+
+const upb_enumdef *NameMap_GetEnum(zend_class_entry *ce) {
+  const upb_enumdef *ret =
+      zend_hash_find_ptr(&PROTOBUF_G(name_enum_cache), ce->name);
   return ret;
 }
 

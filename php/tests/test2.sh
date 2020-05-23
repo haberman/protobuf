@@ -29,7 +29,7 @@ fi
 ./generate_protos.sh
 (cd .. && ./compile_extension2.sh $PHP_BASE --debug)
 
-export ZEND_DONT_UNLOAD_MODULES=1
+#export ZEND_DONT_UNLOAD_MODULES=1
 #export USE_ZEND_ALLOC=0
 
 CMD="$PHP -dextension=../ext/google/protobuf2/modules/protobuf.so $PHPUNIT --bootstrap autoload.php test2"

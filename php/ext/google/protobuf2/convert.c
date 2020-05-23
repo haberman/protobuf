@@ -101,10 +101,15 @@ static zend_function_entry util_methods[] = {
 };
 
 void util_init() {
+  const char *prefix_name = "TYPE_URL_PREFIX";
   zend_class_entry class_type;
+
   INIT_CLASS_ENTRY(class_type, "Google\\Protobuf\\Internal\\GPBUtil",
                    util_methods);
   gpb_util_ce = zend_register_internal_class(&class_type);
+
+  zend_declare_class_constant_string(gpb_util_ce, prefix_name, strlen(prefix_name),
+                              "type.googleapis.com/");
 }
 
 // -----------------------------------------------------------------------------

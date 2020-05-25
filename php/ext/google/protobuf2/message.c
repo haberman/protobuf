@@ -370,7 +370,9 @@ PHP_METHOD(Message, serializeToJsonString) {
                          &status);
 
   if (!upb_ok(&status)) {
-    zend_throw_exception_ex(NULL, 0, "Error occurred during serialization");
+    zend_throw_exception_ex(NULL, 0,
+                            "Error occurred during JSON serialization: %s",
+                            upb_status_errmsg(&status));
     return;
   }
 

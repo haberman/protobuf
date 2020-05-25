@@ -7660,10 +7660,10 @@ static void jsonenc_any(jsonenc *e, const upb_msg *msg, const upb_msgdef *m) {
   jsonenc_putstr(e, ",");
 
   if (upb_msgdef_wellknowntype(any_m) == UPB_WELLKNOWN_UNSPECIFIED) {
-    /* Regular messages: {"@type": "...", "foo": 1, "bar": 2} */
+    /* Regular messages: {"@type": "...","foo": 1, "bar": 2} */
     jsonenc_msgfields(e, any, any_m);
   } else {
-    /* Well-known type: {"@type": "...", "value": <well-known encoding>} */
+    /* Well-known type: {"@type": "...","value": <well-known encoding>} */
     jsonenc_putstr(e, "\"value\":");
     jsonenc_msgfield(e, any, any_m);
   }
@@ -7735,7 +7735,7 @@ static void jsonenc_struct(jsonenc *e, const upb_msg *msg,
       upb_msgval key = upb_mapiter_key(fields, iter);
       upb_msgval val = upb_mapiter_value(fields, iter);
 
-      jsonenc_putsep(e, ", ", &first);
+      jsonenc_putsep(e, ",", &first);
       jsonenc_string(e, key.str_val);
       jsonenc_putstr(e, ":");
       jsonenc_value(e, val.msg_val, upb_fielddef_msgsubdef(value_f));
@@ -7760,7 +7760,7 @@ static void jsonenc_listvalue(jsonenc *e, const upb_msg *msg,
     for (i = 0; i < size; i++) {
       upb_msgval elem = upb_array_get(values, i);
 
-      jsonenc_putsep(e, ", ", &first);
+      jsonenc_putsep(e, ",", &first);
       jsonenc_value(e, elem.msg_val, values_m);
     }
   }
@@ -7917,7 +7917,7 @@ static void jsonenc_array(jsonenc *e, const upb_array *arr,
   jsonenc_putstr(e, "[");
 
   for (i = 0; i < size; i++) {
-    jsonenc_putsep(e, ", ", &first);
+    jsonenc_putsep(e, ",", &first);
     jsonenc_scalar(e, upb_array_get(arr, i), f);
   }
 
@@ -7934,7 +7934,7 @@ static void jsonenc_map(jsonenc *e, const upb_map *map, const upb_fielddef *f) {
   jsonenc_putstr(e, "{");
 
   while (upb_mapiter_next(map, &iter)) {
-    jsonenc_putsep(e, ", ", &first);
+    jsonenc_putsep(e, ",", &first);
     jsonenc_mapkey(e, upb_mapiter_key(map, iter), key_f);
     jsonenc_scalar(e, upb_mapiter_value(map, iter), val_f);
   }

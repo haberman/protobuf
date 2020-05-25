@@ -326,6 +326,12 @@ class EncodeDecodeTest extends TestBase
 
     }
 
+    public function testJsonEncodeEnumFromInitializer()
+    {
+      $m = new TestMessage(['oneof_enum' => TestEnum::TWO]);
+      $this->assertSame('{"oneofEnum":"TWO"}', $m->serializeToJsonString());
+    }
+
     public function testJsonEncodeDecodeOneof()
     {
         $m = new TestMessage();

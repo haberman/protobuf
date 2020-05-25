@@ -1063,6 +1063,16 @@ class EncodeDecodeTest extends TestBase
         $this->assertSame("08011002", bin2hex($m3->getValue()));
     }
 
+    public function testEmptyAny()
+    {
+      $response = new \Google\Protobuf\GPBEmpty();
+      $any = new \Google\Protobuf\Any();
+      $any->setValue($response->serializeToString());
+      $test_any = new TestAny();
+      $test_any->setAnyInOneof($any);
+      $serialized = $test_any->serializeToString();
+    }
+
     public function testDecodeAny()
     {
         // Make sure packed message has been created at least once.

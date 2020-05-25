@@ -213,6 +213,11 @@ enum testLowerCaseEnum {
 
 message TestAny {
   google.protobuf.Any any = 1;
+
+  oneof oneof_fields {
+    TestAny recursive = 2;
+    google.protobuf.Any any_in_oneof = 3;
+  }
 }
 
 message TestInt32Value {

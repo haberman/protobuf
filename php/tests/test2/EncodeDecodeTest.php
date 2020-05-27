@@ -5,6 +5,8 @@ require_once('test_util.php');
 
 use Google\Protobuf\RepeatedField;
 use Google\Protobuf\GPBType;
+use Foo\Errors\ErrorCode;
+use Foo\Errors\AuthenticationErrorEnum\AuthenticationError;
 use Foo\TestInt32Value;
 use Foo\TestInt64Value;
 use Foo\TestUInt32Value;
@@ -37,6 +39,14 @@ use Google\Protobuf\GPBEmpty;
 
 class EncodeDecodeTest extends TestBase
 {
+    public function testIssue3()
+    {
+        $m = new ErrorCode([
+            'authentication_error' => AuthenticationError::AUTHENTICATION_ERROR
+        ]);
+        $this->assertSame('{"authenticationError":"AUTHENTICATION_ERROR"}', $m->serializeToJsonString());
+    }
+
     public function testDecodeJsonSimple()
     {
         $m = new TestMessage();
@@ -324,12 +334,6 @@ class EncodeDecodeTest extends TestBase
         $this->assertSame("oneof_message", $n->getMyOneof());
         $this->assertFalse(is_null($n->getOneofMessage()));
 
-    }
-
-    public function testJsonEncodeEnumFromInitializer()
-    {
-      $m = new TestMessage(['oneof_enum' => TestEnum::TWO]);
-      $this->assertSame('{"oneofEnum":"TWO"}', $m->serializeToJsonString());
     }
 
     public function testJsonEncodeDecodeOneof()

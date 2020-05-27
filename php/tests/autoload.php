@@ -25,3 +25,10 @@ foreach (getGeneratedFiles("generated") as $filename)
 
 }
 
+foreach (getGeneratedFiles("google-commons") as $filename)
+{
+    if (!is_dir($filename)) {
+        include_once $filename;
+    }
+
+}

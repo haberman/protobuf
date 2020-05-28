@@ -2265,6 +2265,15 @@ void upb_status_vseterrf(upb_status *status, const char *fmt, va_list args) {
   status->msg[UPB_STATUS_MAX_MESSAGE - 1] = '\0';
 }
 
+void upb_status_vappenderrf(upb_status *status, const char *fmt, va_list args) {
+  size_t len;
+  if (!status) return;
+  status->ok = false;
+  len = strlen(status->msg);
+  _upb_vsnprintf(status->msg + len, sizeof(status->msg) - len, fmt, args);
+  status->msg[UPB_STATUS_MAX_MESSAGE - 1] = '\0';
+}
+
 /* upb_alloc ******************************************************************/
 
 static void *upb_global_allocfunc(upb_alloc *alloc, void *ptr, size_t oldsize,
@@ -5952,15 +5961,17 @@ static bool jsondec_streql(upb_strview str, const char *lit) {
 }
 
 UPB_NORETURN static void jsondec_err(jsondec *d, const char *msg) {
-  upb_status_seterrf(d->status, "Error parsing JSON @%d:%d: %s", (int)d->line,
+  upb_status_seterrf(d->status, "Error parsing JSON @%d:%d: %s", d->line,
                      (int)(d->ptr - d->line_begin), msg);
   longjmp(d->err, 1);
 }
 
 UPB_NORETURN static void jsondec_errf(jsondec *d, const char *fmt, ...) {
   va_list argp;
+  upb_status_seterrf(d->status, "Error parsing JSON @%d:%d: ", d->line,
+                     (int)(d->ptr - d->line_begin));
   va_start(argp, fmt);
-  upb_status_vseterrf(d->status, fmt, argp);
+  upb_status_vappenderrf(d->status, fmt, argp);
   va_end(argp);
   longjmp(d->err, 1);
 }

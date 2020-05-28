@@ -5952,7 +5952,8 @@ static bool jsondec_streql(upb_strview str, const char *lit) {
 }
 
 UPB_NORETURN static void jsondec_err(jsondec *d, const char *msg) {
-  upb_status_seterrmsg(d->status, msg);
+  upb_status_seterrf(d->status, "Error parsing JSON @%d:%d: %s", (int)d->line,
+                     (int)(d->ptr - d->line_begin), msg);
   longjmp(d->err, 1);
 }
 
@@ -7310,6 +7311,7 @@ bool upb_json_decode(const char *buf, size_t size, upb_msg *msg,
   d.options = options;
   d.depth = 64;
   d.line = 1;
+  d.line_begin = d.ptr;
   d.debug_field = NULL;
   d.is_first = false;
 

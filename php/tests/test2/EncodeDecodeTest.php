@@ -50,7 +50,17 @@ class EncodeDecodeTest extends TestBase
         )));
         $this->assertEquals(9, $ts->getTestCases()->count());
     }
- 
+
+    public function testIssue4()
+    {
+        $response = new \Google\Protobuf\GPBEmpty();
+        $any = new \Google\Protobuf\Any();
+        $any->setValue($response->serializeToString());
+        $lro = new \Google\LongRunning\Operation();
+        $lro->setResponse($any);
+        $this->assertEquals("", $lro->serializeToString());
+    }
+
     public function testIssue3()
     {
         $m = new ErrorCode([
@@ -1083,16 +1093,6 @@ class EncodeDecodeTest extends TestBase
         $this->assertSame("type.googleapis.com/foo.TestMessage",
                           $m3->getTypeUrl());
         $this->assertSame("08011002", bin2hex($m3->getValue()));
-    }
-
-    public function testEmptyAny()
-    {
-      $response = new \Google\Protobuf\GPBEmpty();
-      $any = new \Google\Protobuf\Any();
-      $any->setValue($response->serializeToString());
-      $test_any = new TestAny();
-      $test_any->setAnyInOneof($any);
-      $serialized = $test_any->serializeToString();
     }
 
     public function testDecodeAny()

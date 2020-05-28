@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+import 'google/protobuf/any.proto';
+import 'google/protobuf/wrappers.proto';
+import 'google/protobuf/struct.proto';
+import 'proto/errors/authentication_error.proto';
+
+package foo.errors;
+
+message ErrorCode {
+  oneof error_code {
+    AuthenticationErrorEnum.AuthenticationError authentication_error = 1;
+  }
+}

@@ -166,9 +166,14 @@ static zval *message_read_property(zval *obj, zval *member, int type,
   return rv;
 }
 
-static void pbphp_msg_set(Message *intern, const upb_fielddef *f, zval *val) {
+static void message_write_property(zval *obj, zval *member, zval *val,
+                                   void **cache_slot) {
+  Message* intern = (Message*)Z_OBJ_P(obj);
+  const upb_fielddef *f = get_field(intern, member);
   upb_arena *arena = arena_get(&intern->arena);
   upb_msgval msgval;
+
+  if (!f) return;
 
   if (upb_fielddef_ismap(f)) {
     msgval.map_val = pbphp_getmap(val, f, arena);
@@ -184,16 +189,6 @@ static void pbphp_msg_set(Message *intern, const upb_fielddef *f, zval *val) {
   }
 
   upb_msg_set(intern->msg, f, msgval, arena);
-}
-
-static void message_write_property(zval *obj, zval *member, zval *val,
-                                   void **cache_slot) {
-  Message* intern = (Message*)Z_OBJ_P(obj);
-  const upb_fielddef *f = get_field(intern, member);
-
-  if (!f) return;
-
-  pbphp_msg_set(intern, f, val);
 }
 
 static zval* message_get_property_ptr_ptr(zval* object, zval* member, int type,

@@ -7,6 +7,7 @@ use Google\Protobuf\RepeatedField;
 use Google\Protobuf\GPBType;
 use Foo\Errors\ErrorCode;
 use Foo\Errors\AuthenticationErrorEnum\AuthenticationError;
+use Foo\Tester\TestSuite;
 use Foo\TestInt32Value;
 use Foo\TestInt64Value;
 use Foo\TestUInt32Value;
@@ -39,6 +40,17 @@ use Google\Protobuf\GPBEmpty;
 
 class EncodeDecodeTest extends TestBase
 {
+    public function testIssue7()
+    {
+        $ts = new TestSuite();
+        $ts->mergeFromJsonString(file_get_contents(sprintf(
+            '%s%stest_cases.json',
+            dirname(dirname(__FILE__)),
+            DIRECTORY_SEPARATOR
+        )));
+        $this->assertEquals(9, $ts->getTestCases()->count());
+    }
+ 
     public function testIssue3()
     {
         $m = new ErrorCode([

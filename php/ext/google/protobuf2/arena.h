@@ -35,16 +35,13 @@
 
 #include "php-upb.h"
 
-void arena_module_init();
+// Registers the PHP Arena class.
+void Arena_ModuleInit();
 
-// Creates and returns a new arena object.
-void arena_init(zval *val);
+// Creates and returns a new arena object that wraps a new upb_arena*.
+void Arena_Init(zval *val);
 
 // Gets the underlying upb_arena from this arena object.
-upb_arena *arena_get(zval *arena);
-
-// Merge the lifetimes of these two arenas, such that the memory allocated on
-// the arenas outlives the union of their lifetimes.
-void arena_merge(zend_object *from_arena, zend_object *to_arena);
+upb_arena *Arena_Get(zval *arena);
 
 #endif  // PHP_PROTOBUF_ARENA_H_

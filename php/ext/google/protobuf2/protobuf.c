@@ -123,7 +123,7 @@ static PHP_RINIT_FUNCTION(protobuf) {
   // Create the global generated pool.
   // Reuse the symtab (if any) left to us by the last request.
   upb_symtab *symtab = PROTOBUF_G(saved_symtab);
-  descriptor_pool_create_symtab(&PROTOBUF_G(generated_pool), symtab);
+  DescriptorPool_CreateWithSymbolTable(&PROTOBUF_G(generated_pool), symtab);
 
   // Set up autoloader for bundled sources.
   zend_eval_string("spl_autoload_register('protobuf_internal_loadbundled');",
@@ -140,7 +140,7 @@ static PHP_RSHUTDOWN_FUNCTION(protobuf) {
   // Preserve the symtab if requested.
   if (PROTOBUF_G(keep_descriptor_pool_after_request)) {
     zval *zv = &PROTOBUF_G(generated_pool);
-    PROTOBUF_G(saved_symtab) = descriptor_pool_steal(zv);
+    PROTOBUF_G(saved_symtab) = DescriptorPool_Steal(zv);
   }
 
   zval_dtor(&PROTOBUF_G(generated_pool));
@@ -161,7 +161,7 @@ static PHP_RSHUTDOWN_FUNCTION(protobuf) {
 static PHP_FUNCTION(protobuf_internal_loadbundled) {
   char *name = NULL;
   zend_long size;
-  pbphp_bundled *file;
+  BundledPhp_File *file;
 
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &name, &size) != SUCCESS) {
     return;
@@ -183,12 +183,12 @@ ZEND_END_ARG_INFO()
 // Object Cache.
 // -----------------------------------------------------------------------------
 
-void pbphp_cacheadd(const void *upb_obj, zend_object *php_obj) {
+void ObjCache_Add(const void *upb_obj, zend_object *php_obj) {
   zend_ulong k = (zend_ulong)upb_obj;
   zend_hash_index_add_ptr(&PROTOBUF_G(object_cache), k, php_obj);
 }
 
-void pbphp_cachedel(const void *upb_obj) {
+void ObjCache_Delete(const void *upb_obj) {
   if (upb_obj) {
     zend_ulong k = (zend_ulong)upb_obj;
     int ret = zend_hash_index_del(&PROTOBUF_G(object_cache), k);
@@ -196,7 +196,7 @@ void pbphp_cachedel(const void *upb_obj) {
   }
 }
 
-bool pbphp_cacheget(const void *upb_obj, zval *val) {
+bool ObjCache_Get(const void *upb_obj, zval *val) {
   zend_ulong k = (zend_ulong)upb_obj;
   zend_object *obj = zend_hash_index_find_ptr(&PROTOBUF_G(object_cache), k);
 
@@ -215,13 +215,13 @@ bool pbphp_cacheget(const void *upb_obj, zval *val) {
 // -----------------------------------------------------------------------------
 
 void NameMap_AddMessage(const upb_msgdef *m) {
-  char *k = pbphp_get_classname(upb_msgdef_file(m), upb_msgdef_fullname(m));
+  char *k = GetPhpClassname(upb_msgdef_file(m), upb_msgdef_fullname(m));
   zend_hash_str_add_ptr(&PROTOBUF_G(name_msg_cache), k, strlen(k), (void*)m);
   free(k);
 }
 
 void NameMap_AddEnum(const upb_enumdef *e) {
-  char *k = pbphp_get_classname(upb_enumdef_file(e), upb_enumdef_fullname(e));
+  char *k = GetPhpClassname(upb_enumdef_file(e), upb_enumdef_fullname(e));
   zend_hash_str_add_ptr(&PROTOBUF_G(name_enum_cache), k, strlen(k), (void*)e);
   free(k);
 }
@@ -272,12 +272,12 @@ PHP_INI_END()
 
 static PHP_MINIT_FUNCTION(protobuf) {
   REGISTER_INI_ENTRIES();
-  arena_module_init();
-  array_module_init();
-  convert_module_init();
+  Arena_ModuleInit();
+  Array_ModuleInit();
+  Convert_ModuleInit();
   def_module_init();
-  map_module_init();
-  message_module_init();
+  Map_ModuleInit();
+  Message_ModuleInit();
   return SUCCESS;
 }
 

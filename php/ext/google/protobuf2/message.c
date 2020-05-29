@@ -59,71 +59,21 @@ typedef struct {
 zend_class_entry *message_ce;
 static zend_object_handlers message_object_handlers;
 
-/**
- * Object handler to create a Message.
- */
-static zend_object* message_create(zend_class_entry *class_type) {
+// PHP Object Handlers.
+
+static zend_object* Message_create(zend_class_entry *class_type) {
   Message *intern = emalloc(sizeof(Message));
   // XXX(haberman): verify whether we actually want to take this route.
   class_type->default_properties_count = 0;
   zend_object_std_init(&intern->std, class_type);
   intern->std.handlers = &message_object_handlers;
-  arena_init(&intern->arena);
+  Arena_Init(&intern->arena);
   return &intern->std;
 }
 
-void pbphp_getmsg(zval *val, const Descriptor *desc, upb_msg *msg,
-                  zval *arena) {
-  if (!msg) {
-    ZVAL_NULL(val);
-    return;
-  }
-
-  if (!pbphp_cacheget(msg, val)) {
-    Message *intern = emalloc(sizeof(Message));
-    // XXX(haberman): verify whether we actually want to take this route.
-    desc->class_entry->default_properties_count = 0;
-    zend_object_std_init(&intern->std, desc->class_entry);
-    intern->std.handlers = &message_object_handlers;
-    ZVAL_COPY(&intern->arena, arena);
-    intern->desc = desc;
-    intern->msg = msg;
-    ZVAL_OBJ(val, &intern->std);
-    pbphp_cacheadd(intern->msg, &intern->std);
-  }
-}
-
-bool pbphp_tomsg(zval *val, const Descriptor *desc, upb_arena *arena, upb_msg **msg) {
-  PBPHP_ASSERT(desc);
-
-  if (Z_ISREF_P(val)) {
-    ZVAL_DEREF(val);
-  }
-
-  if (Z_TYPE_P(val) == IS_NULL) {
-    *msg = NULL;
-    return true;
-  }
-
-  if (Z_TYPE_P(val) == IS_OBJECT &&
-      instanceof_function(Z_OBJCE_P(val), desc->class_entry)) {
-    Message *intern = (Message*)Z_OBJ_P(val);
-    upb_arena_fuse(arena, arena_get(&intern->arena));
-    *msg = intern->msg;
-    return true;
-  } else {
-    zend_throw_exception_ex(NULL, 0, "Given value is not an instance of %s.",
-                            ZSTR_VAL(desc->class_entry->name));
-    return false;
-  }
-}
-
-/**
- * Object handler to free a Message.
- */
 static void message_dtor(zend_object* obj) {
   Message* intern = (Message*)obj;
-  pbphp_cachedel(intern->msg);
+  ObjCache_Delete(intern->msg);
   zval_dtor(&intern->arena);
   zend_object_std_dtor(&intern->std);
 }
@@ -141,82 +91,197 @@ static const upb_fielddef *get_field(Message *msg, zval *member) {
   return f;
 }
 
-static zval *message_read_property(zval *obj, zval *member, int type,
+static zval *Message_read_property(zval *obj, zval *member, int type,
                                    void **cache_slot, zval *rv) {
   Message* intern = (Message*)Z_OBJ_P(obj);
   const upb_fielddef *f = get_field(intern, member);
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   upb_msgval msgval;
 
   if (!f) return NULL;
 
   if (upb_fielddef_ismap(f)) {
     upb_mutmsgval msgval = upb_msg_mutable(intern->msg, f, arena);
-    pbphp_getmapfield(rv, msgval.map, f, &intern->arena);
+    MapField_GetPhpWrapper(rv, msgval.map, f, &intern->arena);
   } else if (upb_fielddef_isseq(f)) {
     upb_mutmsgval msgval = upb_msg_mutable(intern->msg, f, arena);
-    pbphp_getrepeatedfield(rv, msgval.array, f, &intern->arena);
+    RepeatedField_GetPhpWrapper(rv, msgval.array, f, &intern->arena);
   } else {
     upb_msgval msgval = upb_msg_get(intern->msg, f);
     upb_fieldtype_t type = upb_fielddef_type(f);
     const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
-    pbphp_tozval(msgval, rv, upb_fielddef_type(f), subdesc, &intern->arena);
+    Convert_UpbToPhp(msgval, rv, upb_fielddef_type(f), subdesc, &intern->arena);
   }
 
   return rv;
 }
 
-static void message_write_property(zval *obj, zval *member, zval *val,
+static void Message_write_property(zval *obj, zval *member, zval *val,
                                    void **cache_slot) {
   Message* intern = (Message*)Z_OBJ_P(obj);
   const upb_fielddef *f = get_field(intern, member);
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   upb_msgval msgval;
 
   if (!f) return;
 
   if (upb_fielddef_ismap(f)) {
-    msgval.map_val = pbphp_getmap(val, f, arena);
+    msgval.map_val = MapField_GetUpbMap(val, f, arena);
     if (!msgval.map_val) return;
   } else if (upb_fielddef_isseq(f)) {
-    msgval.array_val = pbphp_getarr(val, f, arena);
+    msgval.array_val = RepeatedField_GetUpbArray(val, f, arena);
     if (!msgval.array_val) return;
   } else {
     upb_fieldtype_t type = upb_fielddef_type(f);
     const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
-    bool ok = pbphp_tomsgval(val, &msgval, type, subdesc, arena);
+    bool ok = Convert_PhpToUpb(val, &msgval, type, subdesc, arena);
     if (!ok) return;
   }
 
   upb_msg_set(intern->msg, f, msgval, arena);
 }
 
-static zval* message_get_property_ptr_ptr(zval* object, zval* member, int type,
-                                          void** cache_slot) {
+static zval *Message_get_property_ptr_ptr(zval *object, zval *member, int type,
+                                          void **cache_slot) {
   return NULL;
 }
 
-static HashTable* message_get_properties(zval* object TSRMLS_DC) {
+static HashTable* Message_get_properties(zval* object TSRMLS_DC) {
   return NULL;
 }
 
+// C Functions from message.h.
+
+void Message_GetPhpWrapper(zval *val, const Descriptor *desc, upb_msg *msg,
+                           zval *arena) {
+  if (!msg) {
+    ZVAL_NULL(val);
+    return;
+  }
+
+  if (!ObjCache_Get(msg, val)) {
+    Message *intern = emalloc(sizeof(Message));
+    // XXX(haberman): verify whether we actually want to take this route.
+    desc->class_entry->default_properties_count = 0;
+    zend_object_std_init(&intern->std, desc->class_entry);
+    intern->std.handlers = &message_object_handlers;
+    ZVAL_COPY(&intern->arena, arena);
+    intern->desc = desc;
+    intern->msg = msg;
+    ZVAL_OBJ(val, &intern->std);
+    ObjCache_Add(intern->msg, &intern->std);
+  }
+}
+
+bool Message_GetUpbMessage(zval *val, const Descriptor *desc, upb_arena *arena,
+                           upb_msg **msg) {
+  PBPHP_ASSERT(desc);
+
+  if (Z_ISREF_P(val)) {
+    ZVAL_DEREF(val);
+  }
+
+  if (Z_TYPE_P(val) == IS_NULL) {
+    *msg = NULL;
+    return true;
+  }
+
+  if (Z_TYPE_P(val) == IS_OBJECT &&
+      instanceof_function(Z_OBJCE_P(val), desc->class_entry)) {
+    Message *intern = (Message*)Z_OBJ_P(val);
+    upb_arena_fuse(arena, Arena_Get(&intern->arena));
+    *msg = intern->msg;
+    return true;
+  } else {
+    zend_throw_exception_ex(NULL, 0, "Given value is not an instance of %s.",
+                            ZSTR_VAL(desc->class_entry->name));
+    return false;
+  }
+}
+
+bool Message_InitFromPhp(upb_msg *msg, const upb_msgdef *m, zval *init,
+                         upb_arena *arena) {
+  HashTable* table = HASH_OF(init);
+  HashPosition pos;
+
+  if (Z_ISREF_P(init)) {
+    ZVAL_DEREF(init);
+  }
+
+  if (Z_TYPE_P(init) != IS_ARRAY) {
+    zend_throw_exception_ex(NULL, 0,
+                            "Initializer for a message %s must be an array.",
+                            upb_msgdef_fullname(m));
+    return false;
+  }
+
+  zend_hash_internal_pointer_reset_ex(table, &pos);
+  while (true) {
+    zval key;
+    zval *val;
+    const upb_fielddef *f;
+    upb_msgval msgval;
+
+    zend_hash_get_current_key_zval_ex(table, &key, &pos);
+    val = zend_hash_get_current_data_ex(table, &pos);
+
+    if (!val) break;
+
+    if (Z_ISREF_P(val)) {
+      ZVAL_DEREF(val);
+    }
+
+    f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
+
+    if (!f) {
+      zend_throw_exception_ex(NULL, 0,
+                              "No such field %s", Z_STRVAL_P(&key));
+      return false;
+    }
+
+    if (upb_fielddef_ismap(f)) {
+      msgval.map_val = MapField_GetUpbMap(val, f, arena);
+      if (!msgval.map_val) return false;
+    } else if (upb_fielddef_isseq(f)) {
+      msgval.array_val = RepeatedField_GetUpbArray(val, f, arena);
+      if (!msgval.array_val) return false;
+    } else {
+      const Descriptor *desc = Descriptor_GetFromFieldDef(f);
+      upb_fieldtype_t type = upb_fielddef_type(f);
+      if (!Convert_PhpToUpbAutoWrap(val, &msgval, type, desc, arena)) {
+        return false;
+      }
+    }
+
+    upb_msg_set(msg, f, msgval, arena);
+    zend_hash_move_forward_ex(table, &pos);
+    zval_dtor(&key);
+  }
+}
+
+/**
+ * Constructs an instance of RepeatedField.
+ * @param array Map of initial values ['k' = val]
+ * @param long Value type.
+ * @param string Message/Enum class (message/enum value types only).
+ */
 PHP_METHOD(Message, __construct) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const Descriptor* desc = Descriptor_GetFromClassEntry(Z_OBJCE_P(getThis()));
   const upb_msgdef *msgdef = desc->msgdef;
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   zval *init_arr;
 
   intern->desc = desc;
   intern->msg = upb_msg_new(msgdef, arena);
-  pbphp_cacheadd(intern->msg, &intern->std);
+  ObjCache_Add(intern->msg, &intern->std);
 
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "|a!", &init_arr) == FAILURE) {
     return;
   }
 
   if (init_arr) {
-    pbphp_initmsg(intern->msg, desc->msgdef, init_arr, arena);
+    Message_InitFromPhp(intern->msg, desc->msgdef, init_arr, arena);
   }
 }
 
@@ -233,7 +298,7 @@ PHP_METHOD(Message, clear) {
 PHP_METHOD(Message, mergeFrom) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   Message* from;
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
   zval* value;
   char *pb;
@@ -270,7 +335,7 @@ PHP_METHOD(Message, mergeFromString) {
   char *data_copy = NULL;
   zend_long data_len;
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
 
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &data, &data_len) ==
       FAILURE) {
@@ -312,7 +377,7 @@ PHP_METHOD(Message, mergeFromJsonString) {
   char *data_copy = NULL;
   zend_long data_len;
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   upb_status status;
   zend_bool ignore_json_unknown = false;
   int options = 0;
@@ -333,7 +398,8 @@ PHP_METHOD(Message, mergeFromJsonString) {
 
   upb_status_clear(&status);
   if (!upb_json_decode(data_copy, data_len, intern->msg, intern->desc->msgdef,
-                       descriptor_pool_getsymtab(), options, arena, &status)) {
+                       DescriptorPool_GetSymbolTable(), options, arena,
+                       &status)) {
     zend_throw_exception_ex(NULL, 0, "Error occurred during parsing: %s",
                             upb_status_errmsg(&status));
     return;
@@ -361,8 +427,8 @@ PHP_METHOD(Message, serializeToJsonString) {
 
   upb_status_clear(&status);
   size = upb_json_encode(intern->msg, intern->desc->msgdef,
-                         descriptor_pool_getsymtab(), options, buf, sizeof(buf),
-                         &status);
+                         DescriptorPool_GetSymbolTable(), options, buf,
+                         sizeof(buf), &status);
 
   if (!upb_ok(&status)) {
     zend_throw_exception_ex(NULL, 0,
@@ -374,7 +440,7 @@ PHP_METHOD(Message, serializeToJsonString) {
   if (size >= sizeof(buf)) {
     char *buf2 = malloc(size + 1);
     upb_json_encode(intern->msg, intern->desc->msgdef,
-                    descriptor_pool_getsymtab(), options, buf2, size + 1,
+                    DescriptorPool_GetSymbolTable(), options, buf2, size + 1,
                     &status);
     RETVAL_STRINGL(buf2, size);
     free(buf2);
@@ -400,9 +466,10 @@ PHP_METHOD(Message, readWrapperValue) {
     const upb_msg *wrapper = upb_msg_get(intern->msg, f).msg_val;
     const upb_msgdef *m = upb_fielddef_msgsubdef(f);
     const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
+    const upb_fieldtype_t val_type = upb_fielddef_type(val_f);
     upb_msgval msgval = upb_msg_get(wrapper, val_f);
     zval ret;
-    pbphp_tozval(msgval, &ret, upb_fielddef_type(val_f), NULL, &intern->arena);
+    Convert_UpbToPhp(msgval, &ret, val_type, NULL, &intern->arena);
     RETURN_ZVAL(&ret, 1, 0);
   } else {
     RETURN_NULL();
@@ -411,7 +478,7 @@ PHP_METHOD(Message, readWrapperValue) {
 
 PHP_METHOD(Message, writeWrapperValue) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   char* member;
   const upb_fielddef *f;
   upb_msgval msgval;
@@ -440,11 +507,11 @@ PHP_METHOD(Message, writeWrapperValue) {
   } else {
     const upb_msgdef *m = upb_fielddef_msgsubdef(f);
     const upb_fielddef *val_f = upb_msgdef_itof(m, 1);
+    upb_fieldtype_t val_type = upb_fielddef_type(val_f);
     upb_msg *wrapper;
 
-    if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(val_f), NULL, arena)) {
-      // Error already set.
-      return;
+    if (!Convert_PhpToUpb(val, &msgval, val_type, NULL, arena)) {
+      return;  // Error is already set.
     }
 
     wrapper = upb_msg_mutable(intern->msg, f, arena).msg;
@@ -496,7 +563,8 @@ PHP_METHOD(Message, readOneof) {
   {
     upb_msgval msgval = upb_msg_get(intern->msg, f);
     const Descriptor *subdesc = Descriptor_GetFromFieldDef(f);
-    pbphp_tozval(msgval, &ret, upb_fielddef_type(f), subdesc, &intern->arena);
+    Convert_UpbToPhp(msgval, &ret, upb_fielddef_type(f), subdesc,
+                     &intern->arena);
   }
 
   RETURN_ZVAL(&ret, 1, 0);
@@ -506,7 +574,7 @@ PHP_METHOD(Message, writeOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   zend_long field_num;
   const upb_fielddef* f;
-  upb_arena *arena = arena_get(&intern->arena);
+  upb_arena *arena = Arena_Get(&intern->arena);
   upb_msgval msgval;
   zval* val;
 
@@ -517,15 +585,15 @@ PHP_METHOD(Message, writeOneof) {
 
   f = upb_msgdef_itof(intern->desc->msgdef, field_num);
 
-  if (!pbphp_tomsgval(val, &msgval, upb_fielddef_type(f),
-                      Descriptor_GetFromFieldDef(f), arena)) {
+  if (!Convert_PhpToUpb(val, &msgval, upb_fielddef_type(f),
+                        Descriptor_GetFromFieldDef(f), arena)) {
     return;
   }
 
   upb_msg_set(intern->msg, f, msgval, arena);
 }
 
-static  zend_function_entry message_methods[] = {
+static zend_function_entry Message_methods[] = {
   PHP_ME(Message, clear, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, discardUnknownFields, NULL, ZEND_ACC_PUBLIC)
   PHP_ME(Message, serializeToString, NULL, ZEND_ACC_PUBLIC)
@@ -542,25 +610,21 @@ static  zend_function_entry message_methods[] = {
   ZEND_FE_END
 };
 
-static void message_init() {
+void Message_ModuleInit() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h = &message_object_handlers;
 
   // TODO(haberman): see if we can mark this final, for robustness.
   INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\Message",
-                   message_methods);
+                   Message_methods);
 
   message_ce = zend_register_internal_class(&tmp_ce);
-  message_ce->create_object = message_create;
+  message_ce->create_object = Message_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->dtor_obj = message_dtor;
-  h->read_property = message_read_property;
-  h->write_property = message_write_property;
-  h->get_properties = message_get_properties;
-  h->get_property_ptr_ptr = message_get_property_ptr_ptr;
-}
-
-void message_module_init() {
-  message_init();
+  h->read_property = Message_read_property;
+  h->write_property = Message_write_property;
+  h->get_properties = Message_get_properties;
+  h->get_property_ptr_ptr = Message_get_property_ptr_ptr;
 }

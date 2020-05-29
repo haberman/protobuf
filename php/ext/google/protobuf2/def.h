@@ -40,13 +40,13 @@ void def_module_init();
 // Creates a new DescriptorPool to wrap the given symtab. The DescriptorPool
 // takes ownership of the given symtab. If symtab is NULL, the DescriptorPool
 // will create an empty symtab instead.
-void descriptor_pool_create_symtab(zval *zv, upb_symtab *symtab);
+void DescriptorPool_CreateWithSymbolTable(zval *zv, upb_symtab *symtab);
 
 // Given a zval representing a DescriptorPool, steals and returns its symtab,
 // which is now owned by the caller.
-upb_symtab *descriptor_pool_steal(zval *zv);
+upb_symtab *DescriptorPool_Steal(zval *zv);
 
-upb_symtab *descriptor_pool_getsymtab();
+upb_symtab *DescriptorPool_GetSymbolTable();
 
 typedef struct Descriptor {
   zend_object std;

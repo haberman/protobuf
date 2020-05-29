@@ -34,8 +34,8 @@
 typedef struct {
   const char *filename;
   const char *contents;
-} pbphp_bundled;
+} BundledPhp_File;
 
-extern pbphp_bundled *bundled_files;
+extern BundledPhp_File *bundled_files;
 
 #endif  // PHP_PROTOBUF_BUNDLED_PHP_H_

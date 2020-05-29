@@ -45,7 +45,7 @@
 // GPBUtil
 // -----------------------------------------------------------------------------
 
-static zend_class_entry* gpb_util_ce;
+static zend_class_entry* GPBUtil_class_entry;
 
 // The implementation of type checking for primitive fields is empty. This is
 // because type checking is done when direct assigning message fields (e.g.,
@@ -65,6 +65,11 @@ PHP_METHOD(Util, checkString) {}
 PHP_METHOD(Util, checkBytes) {}
 PHP_METHOD(Util, checkMessage) {}
 
+// The result of checkMapField() is assigned, so we need to return the first
+// param:
+//   $arr = GPBUtil::checkMapField($var,
+//                                 \Google\Protobuf\Internal\GPBType::INT64,
+//                                 \Google\Protobuf\Internal\GPBType::INT32);
 PHP_METHOD(Util, checkMapField) {
   zval *val, *key_type, *val_type, *klass;
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "zzz|z", &val, &key_type,
@@ -74,6 +79,10 @@ PHP_METHOD(Util, checkMapField) {
   RETURN_ZVAL(val, 1, 0);
 }
 
+// The result of checkRepeatedField() is assigned, so we need to return the
+// first param:
+// $arr = GPBUtil::checkRepeatedField(
+//     $var, \Google\Protobuf\Internal\GPBType::STRING);
 PHP_METHOD(Util, checkRepeatedField) {
   zval *val, *type, *klass;
   if (zend_parse_parameters(ZEND_NUM_ARGS(), "zz|z", &val, &type, &klass) ==
@@ -99,18 +108,6 @@ static zend_function_entry util_methods[] = {
   PHP_ME(Util, checkRepeatedField, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
   ZEND_FE_END
 };
-
-void util_init() {
-  const char *prefix_name = "TYPE_URL_PREFIX";
-  zend_class_entry class_type;
-
-  INIT_CLASS_ENTRY(class_type, "Google\\Protobuf\\Internal\\GPBUtil",
-                   util_methods);
-  gpb_util_ce = zend_register_internal_class(&class_type);
-
-  zend_declare_class_constant_string(gpb_util_ce, prefix_name, strlen(prefix_name),
-                              "type.googleapis.com/");
-}
 
 // -----------------------------------------------------------------------------
 // Conversion functions used from C
@@ -214,7 +211,7 @@ static void throw_conversion_exception(const char *to, zval *zv) {
   }
 }
 
-bool pbphp_toi64(zval *php_val, int64_t *i64) {
+bool Convert_PhpToInt64(zval *php_val, int64_t *i64) {
   switch (Z_TYPE_P(php_val)) {
     case IS_LONG:
       *i64 = Z_LVAL_P(php_val);
@@ -323,8 +320,8 @@ static bool to_string(zval* from) {
   }
 }
 
-bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
-                    const Descriptor *desc, upb_arena *arena) {
+bool Convert_PhpToUpb(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
+                      const Descriptor *desc, upb_arena *arena) {
   int64_t i64;
 
   if (Z_ISREF_P(php_val)) {
@@ -333,22 +330,22 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
 
   switch (type) {
     case UPB_TYPE_INT64:
-      return pbphp_toi64(php_val, &upb_val->int64_val);
+      return Convert_PhpToInt64(php_val, &upb_val->int64_val);
     case UPB_TYPE_INT32:
     case UPB_TYPE_ENUM:
-      if (!pbphp_toi64(php_val, &i64)) {
+      if (!Convert_PhpToInt64(php_val, &i64)) {
         return false;
       }
       upb_val->int32_val = i64;
       return true;
     case UPB_TYPE_UINT64:
-      if (!pbphp_toi64(php_val, &i64)) {
+      if (!Convert_PhpToInt64(php_val, &i64)) {
         return false;
       }
       upb_val->uint64_val = i64;
       return true;
     case UPB_TYPE_UINT32:
-      if (!pbphp_toi64(php_val, &i64)) {
+      if (!Convert_PhpToInt64(php_val, &i64)) {
         return false;
       }
       upb_val->uint32_val = i64;
@@ -384,14 +381,15 @@ bool pbphp_tomsgval(zval *php_val, upb_msgval *upb_val, upb_fieldtype_t type,
     }
     case UPB_TYPE_MESSAGE:
       PBPHP_ASSERT(desc);
-      return pbphp_tomsg(php_val, desc, arena, (upb_msg**)&upb_val->msg_val);
+      return Message_GetUpbMessage(php_val, desc, arena,
+                                   (upb_msg **)&upb_val->msg_val);
   }
 
   return false;
 }
 
-void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
-                  const Descriptor *desc, zval *arena) {
+void Convert_UpbToPhp(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
+                      const Descriptor *desc, zval *arena) {
   switch (type) {
     case UPB_TYPE_INT64:
       ZVAL_LONG(php_val, upb_val.int64_val);
@@ -426,114 +424,46 @@ void pbphp_tozval(upb_msgval upb_val, zval *php_val, upb_fieldtype_t type,
     }
     case UPB_TYPE_MESSAGE:
       PBPHP_ASSERT(desc);
-      pbphp_getmsg(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
+      Message_GetPhpWrapper(php_val, desc, (upb_msg*)upb_val.msg_val, arena);
       break;
   }
 }
 
-bool pbphp_inittomsgval(zval *val, upb_msgval *upb_val, upb_fieldtype_t type,
-                        const Descriptor *desc, upb_arena *arena) {
+bool Convert_PhpToUpbAutoWrap(zval *val, upb_msgval *upb_val,
+                              upb_fieldtype_t type, const Descriptor *desc,
+                              upb_arena *arena) {
   const upb_msgdef *subm = desc ? desc->msgdef : NULL;
   if (subm && upb_msgdef_iswrapper(subm) && Z_TYPE_P(val) != IS_OBJECT) {
-    // TODO(haberman): support null here?
+    // Assigning a scalar to a wrapper-typed value. We will automatically wrap
+    // the value, so the user doesn't need to create a FooWrapper(['value': X])
+    // message manually.
     upb_msg *wrapper = upb_msg_new(subm, arena);
     const upb_fielddef *val_f = upb_msgdef_itof(subm, 1);
     upb_fieldtype_t type_f = upb_fielddef_type(val_f);
     upb_msgval msgval;
-    if (!pbphp_tomsgval(val, &msgval, type_f, NULL, arena)) return false;
+    if (!Convert_PhpToUpb(val, &msgval, type_f, NULL, arena)) return false;
     upb_msg_set(wrapper, val_f, msgval, arena);
     upb_val->msg_val = wrapper;
     return true;
   } else {
-    // By handling submessages in this case, we only allow:
+    // Convert_PhpToUpb doesn't auto-construct messages. This means that we only
+    // allow:
     //   ['foo_submsg': new Foo(['a' => 1])]
     // not:
     //   ['foo_submsg': ['a' => 1]]
-    return pbphp_tomsgval(val, upb_val, type, desc, arena);
+    return Convert_PhpToUpb(val, upb_val, type, desc, arena);
   }
 }
 
-bool pbphp_initmap(upb_map *map, const upb_fielddef *f, zval *val,
-                   upb_arena *arena) {
-  const upb_msgdef *ent = upb_fielddef_msgsubdef(f);
-  const upb_fielddef *key_f = upb_msgdef_itof(ent, 1);
-  const upb_fielddef *val_f = upb_msgdef_itof(ent, 2);
-  upb_fieldtype_t key_type = upb_fielddef_type(key_f);
-  upb_fieldtype_t val_type = upb_fielddef_type(val_f);
-  const Descriptor *desc = Descriptor_GetFromFieldDef(val_f);
-  HashTable *table;
-  HashPosition pos;
+void Convert_ModuleInit(void) {
+  const char *prefix_name = "TYPE_URL_PREFIX";
+  zend_class_entry class_type;
 
-  if (Z_ISREF_P(val)) {
-    ZVAL_DEREF(val);
-  }
+  INIT_CLASS_ENTRY(class_type, "Google\\Protobuf\\Internal\\GPBUtil",
+                   util_methods);
+  GPBUtil_class_entry = zend_register_internal_class(&class_type);
 
-  if (Z_TYPE_P(val) != IS_ARRAY) {
-    php_error_docref(NULL, E_USER_ERROR,
-                     "Initializer for a map field must be an array.");
-    return false;
-  }
-
-}
-
-bool pbphp_initmsg(upb_msg *msg, const upb_msgdef *m, zval *init,
-                   upb_arena *arena) {
-  HashTable* table = HASH_OF(init);
-  HashPosition pos;
-
-  if (Z_ISREF_P(init)) {
-    ZVAL_DEREF(init);
-  }
-
-  if (Z_TYPE_P(init) != IS_ARRAY) {
-    zend_throw_exception_ex(NULL, 0,
-                            "Initializer for a message %s must be an array.",
-                            upb_msgdef_fullname(m));
-    return false;
-  }
-
-  zend_hash_internal_pointer_reset_ex(table, &pos);
-  while (true) {
-    zval key;
-    zval *val;
-    const upb_fielddef *f;
-    upb_msgval msgval;
-
-    zend_hash_get_current_key_zval_ex(table, &key, &pos);
-    val = zend_hash_get_current_data_ex(table, &pos);
-
-    if (!val) break;
-
-    if (Z_ISREF_P(val)) {
-      ZVAL_DEREF(val);
-    }
-
-    f = upb_msgdef_ntof(m, Z_STRVAL_P(&key), Z_STRLEN_P(&key));
-
-    if (!f) {
-      zend_throw_exception_ex(NULL, 0,
-                              "No such field %s", Z_STRVAL_P(&key));
-      return false;
-    }
-
-    if (upb_fielddef_ismap(f)) {
-      msgval.map_val = pbphp_getmap(val, f, arena);
-      if (!msgval.map_val) return false;
-    } else if (upb_fielddef_isseq(f)) {
-      msgval.array_val = pbphp_getarr(val, f, arena);
-      if (!msgval.array_val) return false;
-    } else {
-      const Descriptor *desc = Descriptor_GetFromFieldDef(f);
-      upb_fieldtype_t type = upb_fielddef_type(f);
-      if (!pbphp_inittomsgval(val, &msgval, type, desc, arena)) return false;
-    }
-
-    upb_msg_set(msg, f, msgval, arena);
-    zend_hash_move_forward_ex(table, &pos);
-    zval_dtor(&key);
-  }
-}
-
-void convert_module_init(void) {
-  util_init();
+  zend_declare_class_constant_string(GPBUtil_class_entry, prefix_name,
+                                     strlen(prefix_name),
+                                     "type.googleapis.com/");
 }

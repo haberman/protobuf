@@ -36,13 +36,13 @@ with open("../" + output, "w") as f:
       f.write('  0x%02x,' % contents[i])
     f.write('0};\n')
 
-  f.write('static pbphp_bundled php[] = {\n')
+  f.write('static BundledPhp_File php[] = {\n')
   for filename in filenames:
     values = (to_class_name(filename), to_c_symbol_name(filename))
     f.write('  {"%s", %s},\n' % values)
 
   f.write('  {NULL, NULL}\n')
   f.write('};\n')
-  f.write('pbphp_bundled *bundled_files = &php[0];\n')
+  f.write('BundledPhp_File *bundled_files = &php[0];\n')
 
 print("Wrote %s" % output)

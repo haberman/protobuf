@@ -12,13 +12,7 @@ typedef struct {
   size_t len, size;
 } stringsink;
 
-static void *stringsink_start(void *_sink, const void *hd, size_t size_hint) {
-  stringsink *sink = _sink;
-  sink->len = 0;
-  return sink;
-}
-
-size_t stringsink_string(stringsink *sink, const char *ptr, size_t len) {
+static size_t stringsink_string(stringsink *sink, const char *ptr, size_t len) {
   size_t new_size = sink->size;
 
   while (sink->len + len > new_size) {
@@ -36,16 +30,16 @@ size_t stringsink_string(stringsink *sink, const char *ptr, size_t len) {
   return len;
 }
 
-void stringsink_init(stringsink *sink) {
+static void stringsink_init(stringsink *sink) {
   sink->size = 32;
   sink->ptr = malloc(sink->size);
   PBPHP_ASSERT(sink->ptr != NULL);
   sink->len = 0;
 }
 
-void stringsink_uninit(stringsink *sink) { free(sink->ptr); }
+static void stringsink_uninit(stringsink *sink) { free(sink->ptr); }
 
-void stringsink_uninit_opaque(void *sink) { stringsink_uninit(sink); }
+/* def name -> classname ******************************************************/
 
 const char *const kReservedNames[] = {
     "abstract",   "and",        "array",        "as",           "break",
@@ -170,7 +164,7 @@ static void fill_classname(const char *fullname,
   }
 }
 
-char *pbphp_get_classname(const upb_filedef *file, const char *fullname) {
+char *GetPhpClassname(const upb_filedef *file, const char *fullname) {
   // Prepend '.' to package name to make it absolute. In the 5 additional
   // bytes allocated, one for '.', one for trailing 0, and 3 for 'GPB' if
   // given message is google.protobuf.Empty.

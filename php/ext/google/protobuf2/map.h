@@ -35,10 +35,26 @@
 
 #include "php-upb.h"
 
-void map_module_init();
+void Map_ModuleInit();
 
-upb_map *pbphp_getmap(zval *val, const upb_fielddef *f, upb_arena *arena);
-void pbphp_getmapfield(zval *val, upb_map *arr, const upb_fielddef *f,
-                       zval *arena);
+// Gets a upb_map* for the PHP object |val|:
+//  * If |val| is a RepeatedField object, we first check its type and verify
+//    that that the elements have the correct type for |f|. If so, we return the
+//    wrapped upb_map*. We also make sure that this map's arena is fused to
+//    |arena|, so the returned upb_map is guaranteed to live as long as
+//    |arena|.
+//  * If |val| is a PHP Map, we attempt to create a new upb_map using
+//    |arena| and add all of the PHP elements to it.
+//
+// If an error occurs, we raise a PHP error and return NULL.
+upb_map *MapField_GetUpbMap(zval *val, const upb_fielddef *f, upb_arena *arena);
+
+// Creates a PHP MapField object for the given upb_map* and |f| and returns it
+// in |val|. The PHP object will keep a reference to this |arena| to ensure the
+// underlying array data stays alive.
+//
+// If |map| is NULL, this will return a PHP null object.
+void MapField_GetPhpWrapper(zval *val, upb_map *arr, const upb_fielddef *f,
+                            zval *arena);
 
 #endif  // PHP_PROTOBUF_MAP_H_

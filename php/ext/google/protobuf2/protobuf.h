@@ -51,9 +51,14 @@ const zval *get_generated_pool();
 //  * upb_msgdef* -> Descriptor
 //  * upb_enumdef* -> EnumDescriptor
 //  * zend_class_entry* -> Descriptor
-void pbphp_cacheadd(const void *key, zend_object *php_obj);
-void pbphp_cachedel(const void *key);
-bool pbphp_cacheget(const void *key, zval *val);
+//
+// Each wrapped object should add itself to the map when it is constructed, and
+// remove itself from the map when it is destroyed. This is how we ensure that
+// the map only contains live objects. The map is weak so it does not actually
+// take references to the cached objects.
+void ObjCache_Add(const void *key, zend_object *php_obj);
+void ObjCache_Delete(const void *key);
+bool ObjCache_Get(const void *key, zval *val);
 
 // PHP class name map. This is necessary because the pb_name->php_class_name
 // transformation is non-reversible, so when we need to look up a msgdef or

@@ -40,6 +40,11 @@ use Google\Protobuf\GPBEmpty;
 
 class EncodeDecodeTest extends TestBase
 {
+    public function testIssue10()
+    {
+        $this->assertFalse(new StringValue(['value' => 'a']) == new StringValue(['value' => 'b']));
+    }
+
     public function testIssue7()
     {
         $ts = new TestSuite();

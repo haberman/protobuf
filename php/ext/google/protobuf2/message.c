@@ -59,8 +59,13 @@ typedef struct {
 zend_class_entry *message_ce;
 static zend_object_handlers message_object_handlers;
 
-// PHP Object Handlers.
+// PHP Object Handlers. ////////////////////////////////////////////////////////
 
+/**
+ * Message_create()
+ *
+ * PHP class entry function to allocate and initialize a new Message object.
+ */
 static zend_object* Message_create(zend_class_entry *class_type) {
   Message *intern = emalloc(sizeof(Message));
   // XXX(haberman): verify whether we actually want to take this route.
@@ -71,6 +76,13 @@ static zend_object* Message_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
+/**
+ * message_dtor()
+ *
+ * Object handler to destroy a Message. This releases all resources associated
+ * with the message. Note that it is possible to access a destroyed object from
+ * PHP in rare cases.
+ */
 static void message_dtor(zend_object* obj) {
   Message* intern = (Message*)obj;
   ObjCache_Delete(intern->msg);
@@ -78,6 +90,11 @@ static void message_dtor(zend_object* obj) {
   zend_object_std_dtor(&intern->std);
 }
 
+/**
+ * get_field()
+ *
+ * Helper function to look up a field given a member name (as a string).
+ */
 static const upb_fielddef *get_field(Message *msg, zval *member) {
   const upb_msgdef *m = msg->desc->msgdef;
   const upb_fielddef *f =
@@ -91,6 +108,24 @@ static const upb_fielddef *get_field(Message *msg, zval *member) {
   return f;
 }
 
+/**
+ * Message_read_property()
+ *
+ * Object handler for reading a property in PHP. Called when PHP code does:
+ *
+ *   $x = $message->foobar;
+ *
+ * Note that all properties of generated messages are private, so this should
+ * only be possible to invoke from generated code, which has accessors like:
+ *
+ *   public function getOptionalInt32()
+ *   {
+ *       return $this->optional_int32;
+ *   }
+ *
+ * We lookup the field and return the scalar, RepeatedField, or MapField for
+ * this field.
+ */
 static zval *Message_read_property(zval *obj, zval *member, int type,
                                    void **cache_slot, zval *rv) {
   Message* intern = (Message*)Z_OBJ_P(obj);
@@ -116,6 +151,27 @@ static zval *Message_read_property(zval *obj, zval *member, int type,
   return rv;
 }
 
+/**
+ * Message_write_property()
+ *
+ * Object handler for writing a property in PHP. Called when PHP code does:
+ *
+ *   $message->foobar = $x;
+ *
+ * Note that all properties of generated messages are private, so this should
+ * only be possible to invoke from generated code, which has accessors like:
+ *
+ *   public function setOptionalInt32($var)
+ *   {
+ *       GPBUtil::checkInt32($var);
+ *       $this->optional_int32 = $var;
+ *
+ *       return $this;
+ *   }
+ *
+ * The C extension version of checkInt32() doesn't actually check anything, so
+ * we perform all checking and conversion in this function.
+ */
 static void Message_write_property(zval *obj, zval *member, zval *val,
                                    void **cache_slot) {
   Message* intern = (Message*)Z_OBJ_P(obj);
@@ -141,16 +197,31 @@ static void Message_write_property(zval *obj, zval *member, zval *val,
   upb_msg_set(intern->msg, f, msgval, arena);
 }
 
+/**
+ * Message_get_property_ptr_ptr()
+ *
+ * Object handler for the get_property_ptr_ptr event in PHP. This returns a
+ * reference to our internal properties. We don't support this, so we return
+ * NULL.
+ */
 static zval *Message_get_property_ptr_ptr(zval *object, zval *member, int type,
                                           void **cache_slot) {
   return NULL;
 }
 
+/**
+ * Message_get_properties()
+ *
+ * Object handler for the get_properties event in PHP. This returns a HashTable
+ * of our internal properties. We don't support this, so we return NULL.
+ */
 static HashTable* Message_get_properties(zval* object TSRMLS_DC) {
   return NULL;
 }
 
-// C Functions from message.h.
+// C Functions from message.h. /////////////////////////////////////////////////
+
+// These are documented in the header file.
 
 void Message_GetPhpWrapper(zval *val, const Descriptor *desc, upb_msg *msg,
                            zval *arena) {
@@ -199,6 +270,32 @@ bool Message_GetUpbMessage(zval *val, const Descriptor *desc, upb_arena *arena,
   }
 }
 
+// Message PHP methods /////////////////////////////////////////////////////////
+
+/**
+ * Message_InitFromPhp()
+ *
+ * Helper method to handle the initialization of a message from a PHP value, eg.
+ *
+ *   $m = new TestMessage([
+ *       'optional_int32' => -42,
+ *       'optional_bool' => true,
+ *       'optional_string' => 'a',
+ *       'optional_enum' => TestEnum::ONE,
+ *       'optional_message' => new Sub([
+ *           'a' => 33
+ *       ]),
+ *       'repeated_int32' => [-42, -52],
+ *       'repeated_enum' => [TestEnum::ZERO, TestEnum::ONE],
+ *       'repeated_message' => [new Sub(['a' => 34]),
+ *                              new Sub(['a' => 35])],
+ *       'map_int32_int32' => [-62 => -62],
+ *       'map_int32_enum' => [1 => TestEnum::ONE],
+ *       'map_int32_message' => [1 => new Sub(['a' => 36])],
+ *   ]);
+ *
+ * The initializer must be an array.
+ */
 bool Message_InitFromPhp(upb_msg *msg, const upb_msgdef *m, zval *init,
                          upb_arena *arena) {
   HashTable* table = HASH_OF(init);
@@ -260,10 +357,10 @@ bool Message_InitFromPhp(upb_msg *msg, const upb_msgdef *m, zval *init,
 }
 
 /**
- * Constructs an instance of RepeatedField.
+ * Message::__construct()
+ *
+ * Constructor for Message.
  * @param array Map of initial values ['k' = val]
- * @param long Value type.
- * @param string Message/Enum class (message/enum value types only).
  */
 PHP_METHOD(Message, __construct) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
@@ -285,16 +382,32 @@ PHP_METHOD(Message, __construct) {
   }
 }
 
+/**
+ * Message::discardUnknownFields()
+ *
+ * Discards any unknown fields for this message or any submessages.
+ */
 PHP_METHOD(Message, discardUnknownFields) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   upb_msg_discardunknown(intern->msg, intern->desc->msgdef, 64);
 }
 
+/**
+ * Message::clear()
+ *
+ * Clears all fields of this message.
+ */
 PHP_METHOD(Message, clear) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   upb_msg_clear(intern->msg, intern->desc->msgdef);
 }
 
+/**
+ * Message::mergeFrom()
+ *
+ * Merges from the given message, which must be of the same class as us.
+ * @param object Message to merge from.
+ */
 PHP_METHOD(Message, mergeFrom) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   Message* from;
@@ -329,6 +442,12 @@ PHP_METHOD(Message, mergeFrom) {
   PBPHP_ASSERT(ok);
 }
 
+/**
+ * Message::mergeFromString()
+ *
+ * Merges from the given string.
+ * @param string Binary protobuf data to merge.
+ */
 PHP_METHOD(Message, mergeFromString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   char *data = NULL;
@@ -352,6 +471,12 @@ PHP_METHOD(Message, mergeFromString) {
   }
 }
 
+/**
+ * Message::serializeToString()
+ *
+ * Serializes this message instance to protobuf data.
+ * @return string Serialized protobuf data.
+ */
 PHP_METHOD(Message, serializeToString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
@@ -371,6 +496,12 @@ PHP_METHOD(Message, serializeToString) {
   upb_arena_free(tmp_arena);
 }
 
+/**
+ * Message::mergeFromJsonString()
+ *
+ * Merges the JSON data parsed from the given string.
+ * @param string Serialized JSON data.
+ */
 PHP_METHOD(Message, mergeFromJsonString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   char *data = NULL;
@@ -406,6 +537,12 @@ PHP_METHOD(Message, mergeFromJsonString) {
   }
 }
 
+/**
+ * Message::serializeToJsonString()
+ *
+ * Serializes this object to JSON.
+ * @return string Serialized JSON data.
+ */
 PHP_METHOD(Message, serializeToJsonString) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const upb_msglayout *l = upb_msgdef_layout(intern->desc->msgdef);
@@ -449,6 +586,19 @@ PHP_METHOD(Message, serializeToJsonString) {
   }
 }
 
+/**
+ * Message::readWrapperValue()
+ *
+ * Returns an unboxed value for the given field. This is called from generated
+ * methods for wrapper fields, eg.
+ *
+ *   public function getDoubleValueUnwrapped()
+ *   {
+ *       return $this->readWrapperValue("double_value");
+ *   }
+ *
+ * @return Unwrapped field value or null.
+ */
 PHP_METHOD(Message, readWrapperValue) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   char* member;
@@ -460,7 +610,12 @@ PHP_METHOD(Message, readWrapperValue) {
   }
 
   f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
-  PBPHP_ASSERT(f);
+
+  if (!f || !upb_fielddef_iswrapper(f)) {
+    zend_throw_exception_ex(NULL, 0, "Message %s has no field %s",
+                            upb_msgdef_fullname(intern->desc->msgdef), member);
+    return;
+  }
 
   if (upb_msg_has(intern->msg, f)) {
     const upb_msg *wrapper = upb_msg_get(intern->msg, f).msg_val;
@@ -476,6 +631,21 @@ PHP_METHOD(Message, readWrapperValue) {
   }
 }
 
+/**
+ * Message::writeWrapperValue()
+ *
+ * Sets the given wrapper field to the given unboxed value. This is called from
+ * generated methods for wrapper fields, eg.
+ *
+ *
+ *   public function setDoubleValueUnwrapped($var)
+ *   {
+ *       $this->writeWrapperValue("double_value", $var);
+ *       return $this;
+ *   }
+ *
+ * @param Unwrapped field value or null.
+ */
 PHP_METHOD(Message, writeWrapperValue) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   upb_arena *arena = Arena_Get(&intern->arena);
@@ -492,7 +662,7 @@ PHP_METHOD(Message, writeWrapperValue) {
 
   f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
 
-  if (!f) {
+  if (!f || !upb_fielddef_iswrapper(f)) {
     zend_throw_exception_ex(NULL, 0, "Message %s has no field %s",
                             upb_msgdef_fullname(intern->desc->msgdef), member);
     return;
@@ -519,6 +689,14 @@ PHP_METHOD(Message, writeWrapperValue) {
   }
 }
 
+/**
+ * Message::whichOneof()
+ *
+ * Given a oneof name, returns the name of the field that is set for this oneof,
+ * or otherwise the empty string.
+ *
+ * @return string The field name in this oneof that is currently set.
+ */
 PHP_METHOD(Message, whichOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   const upb_oneofdef* oneof;
@@ -542,6 +720,19 @@ PHP_METHOD(Message, whichOneof) {
   RETURN_STRING(field ? upb_fielddef_name(field) : "");
 }
 
+/**
+ * Message::readOneof()
+ *
+ * Returns the contents of the given oneof field, given a field number. Called
+ * from generated code methods such as:
+ *
+ *    public function getDoubleValueOneof()
+ *    {
+ *        return $this->readOneof(10);
+ *    }
+ *
+ * @return object The oneof's field value.
+ */
 PHP_METHOD(Message, readOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   zend_long field_num;
@@ -554,7 +745,7 @@ PHP_METHOD(Message, readOneof) {
 
   f = upb_msgdef_itof(intern->desc->msgdef, field_num);
 
-  if (!f) {
+  if (!f || !upb_fielddef_realcontainingoneof(f)) {
     php_error_docref(NULL, E_USER_ERROR,
                      "Internal error, no such oneof field %d\n",
                      (int)field_num);
@@ -570,6 +761,26 @@ PHP_METHOD(Message, readOneof) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/**
+ * Message::writeOneof()
+ *
+ * Sets the contents of the given oneof field, given a field number. Called
+ * from generated code methods such as:
+ *
+ *    public function setDoubleValueOneof($var)
+ *   {
+ *       GPBUtil::checkMessage($var, \Google\Protobuf\DoubleValue::class);
+ *       $this->writeOneof(10, $var);
+ *
+ *       return $this;
+ *   }
+ *
+ * The C extension version of GPBUtil::check*() does nothing, so we perform
+ * all type checking and conversion here.
+ *
+ * @param integer The field number we are setting.
+ * @param object The field value we want to set.
+ */
 PHP_METHOD(Message, writeOneof) {
   Message* intern = (Message*)Z_OBJ_P(getThis());
   zend_long field_num;
@@ -610,11 +821,15 @@ static zend_function_entry Message_methods[] = {
   ZEND_FE_END
 };
 
+/**
+ * Message_ModuleInit()
+ *
+ * Called when the C extension is loaded to register all types.
+ */
 void Message_ModuleInit() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h = &message_object_handlers;
 
-  // TODO(haberman): see if we can mark this final, for robustness.
   INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\Message",
                    Message_methods);
 

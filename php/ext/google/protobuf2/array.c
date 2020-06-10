@@ -58,8 +58,14 @@ typedef struct {
 zend_class_entry *RepeatedField_class_entry;
 static zend_object_handlers RepeatedField_object_handlers;
 
-// Object handlers for RepeatedField.
+// PHP Object Handlers /////////////////////////////////////////////////////////
 
+/**
+ * RepeatedField_create()
+ *
+ * PHP class entry function to allocate and initialize a new RepeatedField
+ * object.
+ */
 static zend_object* RepeatedField_create(zend_class_entry *class_type) {
   RepeatedField *intern = emalloc(sizeof(RepeatedField));
   zend_object_std_init(&intern->std, class_type);
@@ -71,6 +77,13 @@ static zend_object* RepeatedField_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
+/**
+ * RepeatedField_dtor()
+ *
+ * Object handler to destroy a RepeatedField. This releases all resources
+ * associated with the message. Note that it is possible to access a destroyed
+ * object from PHP in rare cases.
+ */
 static void RepeatedField_destructor(zend_object* obj) {
   RepeatedField* intern = (RepeatedField*)obj;
   ObjCache_Delete(intern->array);
@@ -87,7 +100,9 @@ static zval *RepeatedField_GetPropertyPtrPtr(zval *object, zval *member,
   return NULL;  // We don't offer direct references to our properties.
 }
 
-// Public functions exposed in array.h.
+// C Functions from array.h ////////////////////////////////////////////////////
+
+// These are documented in the header file.
 
 void RepeatedField_GetPhpWrapper(zval *val, upb_array *arr,
                                  const upb_fielddef *f, zval *arena) {
@@ -158,7 +173,11 @@ upb_array *RepeatedField_GetUpbArray(zval *val, const upb_fielddef *f,
   }
 }
 
+// RepeatedField PHP methods ///////////////////////////////////////////////////
+
 /**
+ * RepeatedField::__construct()
+ *
  * Constructs an instance of RepeatedField.
  * @param long Type of the stored element.
  * @param string Message/Enum class.
@@ -187,6 +206,8 @@ PHP_METHOD(RepeatedField, __construct) {
 }
 
 /**
+ * RepeatedField::append()
+ *
  * Append element to the end of the repeated field.
  * @param object The element to be added.
  */
@@ -205,7 +226,13 @@ PHP_METHOD(RepeatedField, append) {
 }
 
 /**
- * Check whether the element at given index exists.
+ * RepeatedField::offsetExists()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   isset($arr[$idx]);
+ *   empty($arr[$idx]);
+ *
  * @param long The index to be checked.
  * @return bool True if the element at the given index exists.
  */
@@ -221,8 +248,12 @@ PHP_METHOD(RepeatedField, offsetExists) {
 }
 
 /**
- * Return the element at the given index.
- * This will also be called for: $ele = $arr[0]
+ * RepeatedField::offsetGet()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   $x = $arr[$idx];
+ *
  * @param long The index of the element to be fetched.
  * @return object The stored element at given index.
  * @exception Invalid type for index.
@@ -250,8 +281,13 @@ PHP_METHOD(RepeatedField, offsetGet) {
 }
 
 /**
- * Assign the element at the given index.
- * This will also be called for: $arr []= $ele and $arr[0] = ele
+ * RepeatedField::offsetSet()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   $arr[$idx] = $x;
+ *   $arr []= $x;  // Append
+ *
  * @param long The index of the element to be assigned.
  * @param object The element to be assigned.
  * @exception Invalid type for index.
@@ -288,8 +324,12 @@ PHP_METHOD(RepeatedField, offsetSet) {
 }
 
 /**
- * Remove the element at the given index.
- * This will also be called for: unset($arr)
+ * RepeatedField::offsetUnset()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   unset($arr[$idx]);
+ *
  * @param long The index of the element to be removed.
  * @exception Invalid type for index.
  * @exception The element to be removed is not at the end of the RepeatedField.
@@ -314,6 +354,11 @@ PHP_METHOD(RepeatedField, offsetUnset) {
 }
 
 /**
+ * RepeatedField::count()
+ *
+ * Implements the Countable interface. Invoked when PHP code calls:
+ *
+ *   $len = count($arr);
  * Return the number of stored elements.
  * This will also be called for: count($arr)
  * @return long The number of stored elements.
@@ -329,8 +374,12 @@ PHP_METHOD(RepeatedField, count) {
 }
 
 /**
- * Return the beginning iterator.
- * This will also be called for: foreach($arr)
+ * RepeatedField::getIterator()
+ *
+ * Implements the IteratorAggregate interface. Invoked when PHP code calls:
+ *
+ *   foreach ($arr) {}
+ *
  * @return object Beginning iterator.
  */
 PHP_METHOD(RepeatedField, getIterator) {
@@ -382,9 +431,12 @@ zend_class_entry *RepeatedFieldIter_class_entry;
 static zend_object_handlers repeated_field_iter_object_handlers;
 
 /**
- * Object handler to create a RepeatedFieldIter.
+ * RepeatedFieldIter_create()
+ *
+ * PHP class entry function to allocate and initialize a new RepeatedFieldIter
+ * object.
  */
-zend_object* repeated_field_iter_create(zend_class_entry *class_type) {
+zend_object* RepeatedFieldIter_create(zend_class_entry *class_type) {
   RepeatedFieldIter *intern = emalloc(sizeof(RepeatedFieldIter));
   zend_object_std_init(&intern->std, class_type);
   intern->std.handlers = &repeated_field_iter_object_handlers;
@@ -394,12 +446,24 @@ zend_object* repeated_field_iter_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
-static void repeated_field_iter_dtor(zend_object* obj) {
+/**
+ * RepeatedFieldIter_dtor()
+ *
+ * Object handler to destroy a RepeatedFieldIter. This releases all resources
+ * associated with the message. Note that it is possible to access a destroyed
+ * object from PHP in rare cases.
+ */
+static void RepeatedFieldIter_dtor(zend_object* obj) {
   RepeatedFieldIter* intern = (RepeatedFieldIter*)obj;
   zval_ptr_dtor(&intern->repeated_field);
   zend_object_std_dtor(&intern->std);
 }
 
+/**
+ * RepeatedFieldIter_make()
+ *
+ * C function to create a RepeatedFieldIter.
+ */
 static void RepeatedFieldIter_make(zval *val, zval *repeated_field) {
   RepeatedFieldIter *iter;
   ZVAL_OBJ(val, RepeatedFieldIter_class_entry->create_object(
@@ -408,18 +472,35 @@ static void RepeatedFieldIter_make(zval *val, zval *repeated_field) {
   ZVAL_COPY(&iter->repeated_field, repeated_field);
 }
 
-// PHP's iterator protocol is:
-//
-// for ($iter->rewind(); $iter->valid(); $iter->next()) {
-//   $val = $iter->key();
-//   $val = $iter->current();
-// }
+/*
+ * When a user writes:
+ *
+ *   foreach($arr as $key => $val) {}
+ *
+ * PHP's iterator protocol is:
+ *
+ *   $iter = $arr->getIterator();
+ *   for ($iter->rewind(); $iter->valid(); $iter->next()) {
+ *     $key = $iter->key();
+ *     $val = $iter->current();
+ *   }
+ */
 
+/**
+ * RepeatedFieldIter::rewind()
+ *
+ * Implements the Iterator interface. Sets the iterator to the first element.
+ */
 PHP_METHOD(RepeatedFieldIter, rewind) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   intern->position = 0;
 }
 
+/**
+ * RepeatedFieldIter::current()
+ *
+ * Implements the Iterator interface. Returns the current value.
+ */
 PHP_METHOD(RepeatedFieldIter, current) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   RepeatedField *field = (RepeatedField*)Z_OBJ_P(&intern->repeated_field);
@@ -439,16 +520,31 @@ PHP_METHOD(RepeatedFieldIter, current) {
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/**
+ * RepeatedFieldIter::key()
+ *
+ * Implements the Iterator interface. Returns the current key.
+ */
 PHP_METHOD(RepeatedFieldIter, key) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   RETURN_LONG(intern->position);
 }
 
+/**
+ * RepeatedFieldIter::next()
+ *
+ * Implements the Iterator interface. Advances to the next element.
+ */
 PHP_METHOD(RepeatedFieldIter, next) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   ++intern->position;
 }
 
+/**
+ * RepeatedFieldIter::valid()
+ *
+ * Implements the Iterator interface. Returns true if this is a valid element.
+ */
 PHP_METHOD(RepeatedFieldIter, valid) {
   RepeatedFieldIter *intern = (RepeatedFieldIter*)Z_OBJ_P(getThis());
   RepeatedField *field = (RepeatedField*)Z_OBJ_P(&intern->repeated_field);
@@ -464,14 +560,15 @@ static zend_function_entry repeated_field_iter_methods[] = {
   ZEND_FE_END
 };
 
-static void repeated_field_iter_init() {
-  zend_class_entry tmp_ce;
-}
-
 // -----------------------------------------------------------------------------
 // Module init.
 // -----------------------------------------------------------------------------
 
+/**
+ * Array_ModuleInit()
+ *
+ * Called when the C extension is loaded to register all types.
+ */
 void Array_ModuleInit() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h;
@@ -499,9 +596,9 @@ void Array_ModuleInit() {
   RepeatedFieldIter_class_entry = zend_register_internal_class(&tmp_ce);
   zend_class_implements(RepeatedFieldIter_class_entry, 1, zend_ce_iterator);
   RepeatedFieldIter_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  RepeatedFieldIter_class_entry->create_object = repeated_field_iter_create;
+  RepeatedFieldIter_class_entry->create_object = RepeatedFieldIter_create;
 
   h = &repeated_field_iter_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
-  h->dtor_obj = repeated_field_iter_dtor;
+  h->dtor_obj = RepeatedFieldIter_dtor;
 }

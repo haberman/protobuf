@@ -47,6 +47,12 @@ static void CheckUpbStatus(const upb_status* status, const char* msg) {
 
 static void FieldDescriptor_FromFieldDef(zval *val, const upb_fielddef *f);
 
+// We use this for objects that should not be created directly from PHP.
+static zend_object *CreateHandler_ReturnNull(zend_class_entry *class_type) {
+  return NULL;  // Nobody should call this.
+}
+
+
 // -----------------------------------------------------------------------------
 // EnumValueDescriptor
 // -----------------------------------------------------------------------------
@@ -60,10 +66,11 @@ typedef struct {
 zend_class_entry *EnumValueDescriptor_class_entry;
 static zend_object_handlers EnumValueDescriptor_object_handlers;
 
-static zend_object *EnumValueDescriptor_create(zend_class_entry *class_type) {
-  return NULL;  // Nobody should call this.
-}
-
+/*
+ * EnumValueDescriptor_Make()
+ *
+ * Function to create an EnumValueDescriptor object from C.
+ */
 static void EnumValueDescriptor_Make(zval *val, const char *name,
                                      int32_t number) {
   EnumValueDescriptor *intern = emalloc(sizeof(EnumValueDescriptor));
@@ -75,11 +82,21 @@ static void EnumValueDescriptor_Make(zval *val, const char *name,
   ZVAL_OBJ(val, &intern->std);
 }
 
+/*
+ * EnumValueDescriptor::getName()
+ *
+ * Returns the name for this enum value.
+ */
 PHP_METHOD(EnumValueDescriptor, getName) {
   EnumValueDescriptor *intern = (EnumValueDescriptor*)Z_OBJ_P(getThis());
   RETURN_STRING(intern->name);
 }
 
+/*
+ * EnumValueDescriptor::getNumber()
+ *
+ * Returns the number for this enum value.
+ */
 PHP_METHOD(EnumValueDescriptor, getNumber) {
   EnumValueDescriptor *intern = (EnumValueDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(intern->number);
@@ -102,11 +119,6 @@ typedef struct {
 
 zend_class_entry *EnumDescriptor_class_entry;
 static zend_object_handlers EnumDescriptor_object_handlers;
-
-static zend_object *EnumDescriptor_create(zend_class_entry *class_type) {
-  // TODO(haberman): nobody should call this, how can we prohibit it?
-  return NULL;
-}
 
 void EnumDescriptor_FromClassEntry(zval *val, zend_class_entry *ce) {
   // To differentiate enums from classes, we pointer-tag the class entry.
@@ -157,6 +169,12 @@ void EnumDescriptor_FromEnumDef(zval *val, const upb_enumdef *m) {
   }
 }
 
+/*
+ * EnumDescriptor::getValue()
+ *
+ * Returns an EnumValueDescriptor for this index. Note: we are not looking
+ * up by numeric enum value, but by the index in the list of enum values.
+ */
 PHP_METHOD(EnumDescriptor, getValue) {
   EnumDescriptor *intern = (EnumDescriptor*)Z_OBJ_P(getThis());
   zend_long index;
@@ -185,11 +203,23 @@ PHP_METHOD(EnumDescriptor, getValue) {
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/*
+ * EnumDescriptor::getValueCount()
+ *
+ * Returns the number of values in this enum.
+ */
 PHP_METHOD(EnumDescriptor, getValueCount) {
   EnumDescriptor *intern = (EnumDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_enumdef_numvals(intern->enumdef));
 }
 
+/*
+ * EnumDescriptor::getPublicDescriptor()
+ *
+ * Returns this EnumDescriptor. Unlike the pure-PHP descriptor, we do not
+ * have two separate EnumDescriptor classes. We use a single class for both
+ * the public and private descriptor.
+ */
 PHP_METHOD(EnumDescriptor, getPublicDescriptor) {
   RETURN_ZVAL(getThis(), 1, 0);
 }
@@ -213,11 +243,6 @@ typedef struct {
 zend_class_entry *OneofDescriptor_class_entry;
 static zend_object_handlers OneofDescriptor_object_handlers;
 
-static zend_object *OneofDescriptor_create(zend_class_entry *class_type) {
-  // TODO(haberman): nobody should call this, how can we prohibit it?
-  return NULL;
-}
-
 static void OneofDescriptor_FromOneofDef(zval *val, const upb_oneofdef *o) {
   if (o == NULL) {
     ZVAL_NULL(val);
@@ -238,11 +263,22 @@ static void OneofDescriptor_FromOneofDef(zval *val, const upb_oneofdef *o) {
   }
 }
 
+/*
+ * OneofDescriptor::getName()
+ *
+ * Returns the name of this oneof.
+ */
 PHP_METHOD(OneofDescriptor, getName) {
   OneofDescriptor *intern = (OneofDescriptor*)Z_OBJ_P(getThis());
   RETURN_STRING(upb_oneofdef_name(intern->oneofdef));
 }
 
+/*
+ * OneofDescriptor::getField()
+ *
+ * Returns a field from this oneof. The given index must be in the range
+ *   [0, getFieldCount() - 1].
+ */
 PHP_METHOD(OneofDescriptor, getField) {
   OneofDescriptor *intern = (OneofDescriptor*)Z_OBJ_P(getThis());
   zend_long index;
@@ -271,6 +307,11 @@ PHP_METHOD(OneofDescriptor, getField) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * OneofDescriptor::getFieldCount()
+ *
+ * Returns the number of fields in this oneof.
+ */
 PHP_METHOD(OneofDescriptor, getFieldCount) {
   OneofDescriptor *intern = (OneofDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_oneofdef_numfields(intern->oneofdef));
@@ -294,11 +335,6 @@ typedef struct {
 
 zend_class_entry *FieldDescriptor_class_entry;
 static zend_object_handlers FieldDescriptor_object_handlers;
-
-static zend_object *FieldDescriptor_create(zend_class_entry *class_type) {
-  // TODO(haberman): nobody should call this, how can we prohibit it?
-  return NULL;
-}
 
 static void FieldDescriptor_FromFieldDef(zval *val, const upb_fielddef *f) {
   if (f == NULL) {
@@ -353,31 +389,61 @@ upb_fieldtype_t to_fieldtype(upb_descriptortype_t type) {
   return 0;
 }
 
+/*
+ * FieldDescriptor::getName()
+ *
+ * Returns the name of this field.
+ */
 PHP_METHOD(FieldDescriptor, getName) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   RETURN_STRING(upb_fielddef_name(intern->fielddef));
 }
 
+/*
+ * FieldDescriptor::getNumber()
+ *
+ * Returns the number of this field.
+ */
 PHP_METHOD(FieldDescriptor, getNumber) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_fielddef_number(intern->fielddef));
 }
 
+/*
+ * FieldDescriptor::getLabel()
+ *
+ * Returns the label of this field as an integer.
+ */
 PHP_METHOD(FieldDescriptor, getLabel) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_fielddef_label(intern->fielddef));
 }
 
+/*
+ * FieldDescriptor::getType()
+ *
+ * Returns the type of this field as an integer.
+ */
 PHP_METHOD(FieldDescriptor, getType) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_fielddef_descriptortype(intern->fielddef));
 }
 
+/*
+ * FieldDescriptor::isMap()
+ *
+ * Returns true if this field is a map.
+ */
 PHP_METHOD(FieldDescriptor, isMap) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   RETURN_BOOL(upb_fielddef_ismap(intern->fielddef));
 }
 
+/*
+ * FieldDescriptor::getEnumType()
+ *
+ * Returns the EnumDescriptor for this field, which must be an enum.
+ */
 PHP_METHOD(FieldDescriptor, getEnumType) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   const upb_enumdef *e = upb_fielddef_enumsubdef(intern->fielddef);
@@ -395,6 +461,11 @@ PHP_METHOD(FieldDescriptor, getEnumType) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * FieldDescriptor::getMessageType()
+ *
+ * Returns the Descriptor for this field, which must be a message.
+ */
 PHP_METHOD(FieldDescriptor, getMessageType) {
   FieldDescriptor *intern = (FieldDescriptor*)Z_OBJ_P(getThis());
   Descriptor* desc = Descriptor_GetFromFieldDef(intern->fielddef);
@@ -429,16 +500,15 @@ static zend_function_entry FieldDescriptor_methods[] = {
 zend_class_entry *Descriptor_class_entry;
 static zend_object_handlers Descriptor_object_handlers;
 
-static zend_object* Descriptor_create(zend_class_entry *class_type) {
-  // TODO(haberman): nobody should call this, how can we prohibit it?
-  return NULL;
-}
-
 static void Descriptor_destructor(zend_object* obj) {
   Descriptor* intern = (Descriptor*)obj;
   // We don't really need to do anything here, we don't allow this to be
   // collected before the end of the request.
 }
+
+// C Functions from def.h //////////////////////////////////////////////////////
+
+// These are documented in the header file.
 
 void Descriptor_FromClassEntry(zval *val, zend_class_entry *ce) {
   if (ce == NULL) {
@@ -514,15 +584,33 @@ Descriptor* Descriptor_GetFromFieldDef(const upb_fielddef *f) {
   return Descriptor_GetFromMessageDef(upb_fielddef_msgsubdef(f));
 }
 
+/*
+ * Descriptor::getPublicDescriptor()
+ *
+ * Returns this EnumDescriptor. Unlike the pure-PHP descriptor, we do not
+ * have two separate EnumDescriptor classes. We use a single class for both
+ * the public and private descriptor.
+ */
 PHP_METHOD(Descriptor, getPublicDescriptor) {
   RETURN_ZVAL(getThis(), 1, 0);
 }
 
+/*
+ * Descriptor::getFullName()
+ *
+ * Returns the full name for this message type.
+ */
 PHP_METHOD(Descriptor, getFullName) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   RETURN_STRING(upb_msgdef_fullname(intern->msgdef));
 }
 
+/*
+ * Descriptor::getField()
+ *
+ * Returns a FieldDescriptor for the given index, which must be in the range
+ * [0, getFieldCount()-1].
+ */
 PHP_METHOD(Descriptor, getField) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   int count = upb_msgdef_numfields(intern->msgdef);
@@ -551,11 +639,22 @@ PHP_METHOD(Descriptor, getField) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * Descriptor::getFieldCount()
+ *
+ * Returns the number of fields in this message.
+ */
 PHP_METHOD(Descriptor, getFieldCount) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_msgdef_numfields(intern->msgdef));
 }
 
+/*
+ * Descriptor::getOneofDecl()
+ *
+ * Returns a OneofDescriptor for the given index, which must be in the range
+ * [0, getOneofDeclCount()].
+ */
 PHP_METHOD(Descriptor, getOneofDecl) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   zend_long index;
@@ -584,11 +683,21 @@ PHP_METHOD(Descriptor, getOneofDecl) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * Descriptor::getOneofDeclCount()
+ *
+ * Returns the number of oneofs in this message.
+ */
 PHP_METHOD(Descriptor, getOneofDeclCount) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   RETURN_LONG(upb_msgdef_numoneofs(intern->msgdef));
 }
 
+/*
+ * Descriptor::getClass()
+ *
+ * Returns the name of the PHP class for this message.
+ */
 PHP_METHOD(Descriptor, getClass) {
   Descriptor *intern = (Descriptor*)Z_OBJ_P(getThis());
   const char* classname = ZSTR_VAL(intern->class_entry->name);
@@ -672,12 +781,22 @@ upb_symtab *DescriptorPool_GetSymbolTable() {
   return intern->symtab;
 }
 
+/*
+ * DescriptorPool::getGeneratedPool()
+ *
+ * Returns the generated DescriptorPool.
+ */
 PHP_METHOD(DescriptorPool, getGeneratedPool) {
   zval ret;
   ZVAL_COPY(&ret, get_generated_pool());
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/*
+ * DescriptorPool::getDescriptorByClassName()
+ *
+ * Returns a Descriptor object for the given PHP class name.
+ */
 PHP_METHOD(DescriptorPool, getDescriptorByClassName) {
   char *classname = NULL;
   zend_long classname_len;
@@ -703,6 +822,11 @@ PHP_METHOD(DescriptorPool, getDescriptorByClassName) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * DescriptorPool::getEnumDescriptorByClassName()
+ *
+ * Returns a EnumDescriptor object for the given PHP class name.
+ */
 PHP_METHOD(DescriptorPool, getEnumDescriptorByClassName) {
   char *classname = NULL;
   zend_long classname_len;
@@ -728,6 +852,11 @@ PHP_METHOD(DescriptorPool, getEnumDescriptorByClassName) {
   RETURN_ZVAL(&ret, 1, 0);
 }
 
+/*
+ * DescriptorPool::getEnumDescriptorByProtoName()
+ *
+ * Returns a Descriptor object for the given protobuf message name.
+ */
 PHP_METHOD(DescriptorPool, getDescriptorByProtoName) {
   DescriptorPool *intern = GetPool(getThis());
   char *protoname = NULL;
@@ -754,7 +883,11 @@ PHP_METHOD(DescriptorPool, getDescriptorByProtoName) {
   }
 }
 
-
+/*
+ * depends_on_descriptor()
+ *
+ * Returns true if this FileDescriptorProto depends on descriptor.proto.
+ */
 bool depends_on_descriptor(const google_protobuf_FileDescriptorProto* file) {
   const upb_strview *deps;
   upb_strview name = upb_strview_makez("google/protobuf/descriptor.proto");
@@ -770,6 +903,11 @@ bool depends_on_descriptor(const google_protobuf_FileDescriptorProto* file) {
   return false;
 }
 
+/*
+ * add_name_mappings()
+ *
+ * Adds the messages and enums in this file to the NameMap.
+ */
 static void add_name_mappings(const upb_filedef *file) {
   size_t i;
   for (i = 0; i < upb_filedef_msgcount(file); i++) {
@@ -781,6 +919,11 @@ static void add_name_mappings(const upb_filedef *file) {
   }
 }
 
+/*
+ * add_name_mappings()
+ *
+ * Adds the given descriptor data to this DescriptorPool.
+ */
 static void add_descriptor(DescriptorPool *pool, const char *data,
                            int data_len, upb_arena *arena) {
   size_t i, n;
@@ -821,6 +964,11 @@ static void add_descriptor(DescriptorPool *pool, const char *data,
   }
 }
 
+/*
+ * DescriptorPool::internalAddGeneratedFile()
+ *
+ * Adds the given descriptor data to this DescriptorPool.
+ */
 PHP_METHOD(DescriptorPool, internalAddGeneratedFile) {
   DescriptorPool *intern = GetPool(getThis());
   char *data = NULL;
@@ -862,7 +1010,7 @@ static zend_function_entry gpb_type_methods[] = {
 // Module Init
 // -----------------------------------------------------------------------------
 
-void def_module_init() {
+void Def_ModuleInit() {
   zend_class_entry tmp_ce;
   zend_object_handlers *h;
 
@@ -870,7 +1018,7 @@ void def_module_init() {
                    OneofDescriptor_methods);
   OneofDescriptor_class_entry = zend_register_internal_class(&tmp_ce);
   OneofDescriptor_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  OneofDescriptor_class_entry->create_object = OneofDescriptor_create;
+  OneofDescriptor_class_entry->create_object = CreateHandler_ReturnNull;
   h = &OneofDescriptor_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
 
@@ -878,7 +1026,7 @@ void def_module_init() {
                    EnumValueDescriptor_methods);
   EnumValueDescriptor_class_entry = zend_register_internal_class(&tmp_ce);
   EnumValueDescriptor_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  EnumValueDescriptor_class_entry->create_object = EnumValueDescriptor_create;
+  EnumValueDescriptor_class_entry->create_object = CreateHandler_ReturnNull;
   h = &EnumValueDescriptor_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
 
@@ -887,7 +1035,7 @@ void def_module_init() {
                    EnumDescriptor_methods);
   EnumDescriptor_class_entry = zend_register_internal_class(&tmp_ce);
   EnumDescriptor_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  EnumDescriptor_class_entry->create_object = EnumDescriptor_create;
+  EnumDescriptor_class_entry->create_object = CreateHandler_ReturnNull;
   h = &EnumDescriptor_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
 
@@ -896,7 +1044,7 @@ void def_module_init() {
 
   Descriptor_class_entry = zend_register_internal_class(&tmp_ce);
   Descriptor_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  Descriptor_class_entry->create_object = Descriptor_create;
+  Descriptor_class_entry->create_object = CreateHandler_ReturnNull;
   h = &Descriptor_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->dtor_obj = Descriptor_destructor;
@@ -905,7 +1053,7 @@ void def_module_init() {
                    FieldDescriptor_methods);
   FieldDescriptor_class_entry = zend_register_internal_class(&tmp_ce);
   FieldDescriptor_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  FieldDescriptor_class_entry->create_object = FieldDescriptor_create;
+  FieldDescriptor_class_entry->create_object = CreateHandler_ReturnNull;
   h = &FieldDescriptor_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
 

@@ -58,8 +58,14 @@ typedef struct {
 zend_class_entry *MapField_class_entry;
 static zend_object_handlers MapField_object_handlers;
 
-// PHP Object Handlers.
+// PHP Object Handlers /////////////////////////////////////////////////////////
 
+/**
+ * MapField_create()
+ *
+ * PHP class entry function to allocate and initialize a new MapField
+ * object.
+ */
 static zend_object* MapField_create(zend_class_entry *class_type) {
   MapField *intern = emalloc(sizeof(MapField));
   zend_object_std_init(&intern->std, class_type);
@@ -70,6 +76,13 @@ static zend_object* MapField_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
+/**
+ * MapField_dtor()
+ *
+ * Object handler to destroy a MapField. This releases all resources
+ * associated with the message. Note that it is possible to access a destroyed
+ * object from PHP in rare cases.
+ */
 static void MapField_destructor(zend_object* obj) {
   MapField* intern = (MapField*)obj;
   ObjCache_Delete(intern->map);
@@ -77,7 +90,18 @@ static void MapField_destructor(zend_object* obj) {
   zend_object_std_dtor(&intern->std);
 }
 
-// C Functions declared in map.h
+static zval *Map_GetPropertyPtrPtr(zval *object, zval *member, int type,
+                                      void **cache_slot) {
+  return NULL;  // We don't offer direct references to our properties.
+}
+
+static HashTable *map_get_properties(zval *object TSRMLS_DC) {
+  return NULL;  // We do not have a properties table.
+}
+
+// C Functions from map.h //////////////////////////////////////////////////////
+
+// These are documented in the header file.
 
 void MapField_GetPhpWrapper(zval *val, upb_map *map, const upb_fielddef *f,
                             zval *arena) {
@@ -162,8 +186,12 @@ upb_map *MapField_GetUpbMap(zval *val, const upb_fielddef *f, upb_arena *arena) 
   }
 }
 
+// MapField PHP methods ////////////////////////////////////////////////////////
+
 /**
- * Constructs an instance of RepeatedField.
+ * MapField::__construct()
+ *
+ * Constructs an instance of MapField.
  * @param long Key type.
  * @param long Value type.
  * @param string Message/Enum class (message/enum value types only).
@@ -208,6 +236,17 @@ PHP_METHOD(MapField, __construct) {
   ObjCache_Add(intern->map, &intern->std);
 }
 
+/**
+ * MapField::offsetExists()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   isset($map[$idx]);
+ *   empty($map[$idx]);
+ *
+ * @param long The index to be checked.
+ * @return bool True if the element at the given index exists.
+ */
 PHP_METHOD(MapField, offsetExists) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
   zval *key;
@@ -221,6 +260,18 @@ PHP_METHOD(MapField, offsetExists) {
   RETURN_BOOL(upb_map_get(intern->map, upb_key, NULL));
 }
 
+/**
+ * MapField::offsetGet()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   $x = $map[$idx];
+ *
+ * @param long The index of the element to be fetched.
+ * @return object The stored element at given index.
+ * @exception Invalid type for index.
+ * @exception Non-existing index.
+ */
 PHP_METHOD(MapField, offsetGet) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
   upb_arena *arena = Arena_Get(&intern->arena);
@@ -242,6 +293,19 @@ PHP_METHOD(MapField, offsetGet) {
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/**
+ * MapField::offsetSet()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   $map[$idx] = $x;
+ *
+ * @param long The index of the element to be assigned.
+ * @param object The element to be assigned.
+ * @exception Invalid type for index.
+ * @exception Non-existing index.
+ * @exception Incorrect type of the element.
+ */
 PHP_METHOD(MapField, offsetSet) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
   upb_arena *arena = Arena_Get(&intern->arena);
@@ -257,6 +321,17 @@ PHP_METHOD(MapField, offsetSet) {
   upb_map_set(intern->map, upb_key, upb_val, arena);
 }
 
+/**
+ * MapField::offsetUnset()
+ *
+ * Implements the ArrayAccess interface. Invoked when PHP code calls:
+ *
+ *   unset($map[$idx]);
+ *
+ * @param long The index of the element to be removed.
+ * @exception Invalid type for index.
+ * @exception The element to be removed is not at the end of the MapField.
+ */
 PHP_METHOD(MapField, offsetUnset) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
   zval *key;
@@ -270,6 +345,16 @@ PHP_METHOD(MapField, offsetUnset) {
   upb_map_delete(intern->map, upb_key);
 }
 
+/**
+ * MapField::count()
+ *
+ * Implements the Countable interface. Invoked when PHP code calls:
+ *
+ *   $len = count($map);
+ * Return the number of stored elements.
+ * This will also be called for: count($map)
+ * @return long The number of stored elements.
+ */
 PHP_METHOD(MapField, count) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
 
@@ -280,6 +365,15 @@ PHP_METHOD(MapField, count) {
   RETURN_LONG(upb_map_size(intern->map));
 }
 
+/**
+ * MapField::getIterator()
+ *
+ * Implements the IteratorAggregate interface. Invoked when PHP code calls:
+ *
+ *   foreach ($arr) {}
+ *
+ * @return object Beginning iterator.
+ */
 PHP_METHOD(MapField, getIterator) {
   MapField *intern = (MapField*)Z_OBJ_P(getThis());
   zval ret;
@@ -311,13 +405,6 @@ static zend_function_entry MapField_methods[] = {
   ZEND_FE_END
 };
 
-static zval *map_get_property_ptr_ptr(zval *object, zval *member, int type,
-                                      void **cache_slot) {
-  return NULL;
-}
-
-static HashTable *map_get_properties(zval *object TSRMLS_DC) { return NULL; }
-
 // -----------------------------------------------------------------------------
 // MapFieldIter
 // -----------------------------------------------------------------------------
@@ -332,9 +419,12 @@ zend_class_entry *MapFieldIter_class_entry;
 static zend_object_handlers MapFieldIter_object_handlers;
 
 /**
- * Object handler to create a MapFieldIter.
+ * MapFieldIter_create()
+ *
+ * PHP class entry function to allocate and initialize a new MapFieldIter
+ * object.
  */
-zend_object* map_field_iter_create(zend_class_entry *class_type) {
+zend_object* MapFieldIter_create(zend_class_entry *class_type) {
   MapFieldIter *intern = emalloc(sizeof(MapFieldIter));
   zend_object_std_init(&intern->std, class_type);
   intern->std.handlers = &MapFieldIter_object_handlers;
@@ -344,12 +434,24 @@ zend_object* map_field_iter_create(zend_class_entry *class_type) {
   return &intern->std;
 }
 
+/**
+ * MapFieldIter_dtor()
+ *
+ * Object handler to destroy a MapFieldIter. This releases all resources
+ * associated with the message. Note that it is possible to access a destroyed
+ * object from PHP in rare cases.
+ */
 static void map_field_iter_dtor(zend_object* obj) {
   MapFieldIter* intern = (MapFieldIter*)obj;
   zval_ptr_dtor(&intern->map_field);
   zend_object_std_dtor(&intern->std);
 }
 
+/**
+ * MapFieldIter_make()
+ *
+ * Function to create a MapFieldIter directly from C.
+ */
 static void MapFieldIter_make(zval *val, zval *map_field) {
   MapFieldIter *iter;
   ZVAL_OBJ(val,
@@ -362,13 +464,25 @@ static void MapFieldIter_make(zval *val, zval *map_field) {
 // PHP MapFieldIter Methods
 // -----------------------------------------------------------------------------
 
-// PHP's iterator protocol is:
-//
-// for ($iter->rewind(); $iter->valid(); $iter->next()) {
-//   $val = $iter->key();
-//   $val = $iter->current();
-// }
+/*
+ * When a user writes:
+ *
+ *   foreach($arr as $key => $val) {}
+ *
+ * PHP translates this into:
+ *
+ *   $iter = $arr->getIterator();
+ *   for ($iter->rewind(); $iter->valid(); $iter->next()) {
+ *     $key = $iter->key();
+ *     $val = $iter->current();
+ *   }
+ */
 
+/**
+ * MapFieldIter::rewind()
+ *
+ * Implements the Iterator interface. Sets the iterator to the first element.
+ */
 PHP_METHOD(MapFieldIter, rewind) {
   MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
   MapField *map_field = (MapField*)Z_OBJ_P(&intern->map_field);
@@ -376,6 +490,11 @@ PHP_METHOD(MapFieldIter, rewind) {
   upb_mapiter_next(map_field->map, &intern->position);
 }
 
+/**
+ * MapFieldIter::current()
+ *
+ * Implements the Iterator interface. Returns the current value.
+ */
 PHP_METHOD(MapFieldIter, current) {
   MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
   MapField *field = (MapField*)Z_OBJ_P(&intern->map_field);
@@ -386,6 +505,11 @@ PHP_METHOD(MapFieldIter, current) {
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/**
+ * MapFieldIter::key()
+ *
+ * Implements the Iterator interface. Returns the current key.
+ */
 PHP_METHOD(MapFieldIter, key) {
   MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
   MapField *field = (MapField*)Z_OBJ_P(&intern->map_field);
@@ -395,12 +519,22 @@ PHP_METHOD(MapFieldIter, key) {
   RETURN_ZVAL(&ret, 0, 1);
 }
 
+/**
+ * MapFieldIter::next()
+ *
+ * Implements the Iterator interface. Advances to the next element.
+ */
 PHP_METHOD(MapFieldIter, next) {
   MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
   MapField *field = (MapField*)Z_OBJ_P(&intern->map_field);
   upb_mapiter_next(field->map, &intern->position);
 }
 
+/**
+ * MapFieldIter::valid()
+ *
+ * Implements the Iterator interface. Returns true if this is a valid element.
+ */
 PHP_METHOD(MapFieldIter, valid) {
   MapFieldIter *intern = (MapFieldIter*)Z_OBJ_P(getThis());
   MapField *field = (MapField*)Z_OBJ_P(&intern->map_field);
@@ -416,6 +550,16 @@ static zend_function_entry map_field_iter_methods[] = {
   PHP_ME(MapFieldIter, valid,       arginfo_void, ZEND_ACC_PUBLIC)
   ZEND_FE_END
 };
+
+// -----------------------------------------------------------------------------
+// Module init.
+// -----------------------------------------------------------------------------
+
+/**
+ * Map_ModuleInit()
+ *
+ * Called when the C extension is loaded to register all types.
+ */
 
 void Map_ModuleInit() {
   zend_class_entry tmp_ce;
@@ -434,7 +578,7 @@ void Map_ModuleInit() {
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
   h->dtor_obj = MapField_destructor;
   h->get_properties = map_get_properties;
-  h->get_property_ptr_ptr = map_get_property_ptr_ptr;
+  h->get_property_ptr_ptr = Map_GetPropertyPtrPtr;
 
   INIT_CLASS_ENTRY(tmp_ce, "Google\\Protobuf\\Internal\\MapFieldIter",
                    map_field_iter_methods);
@@ -443,7 +587,7 @@ void Map_ModuleInit() {
   zend_class_implements(MapFieldIter_class_entry, 1, zend_ce_iterator);
   MapFieldIter_class_entry->ce_flags |= ZEND_ACC_FINAL;
   MapFieldIter_class_entry->ce_flags |= ZEND_ACC_FINAL;
-  MapFieldIter_class_entry->create_object = map_field_iter_create;
+  MapFieldIter_class_entry->create_object = MapFieldIter_create;
 
   h = &MapFieldIter_object_handlers;
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));

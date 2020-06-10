@@ -59,7 +59,7 @@ typedef struct {
 zend_class_entry *message_ce;
 static zend_object_handlers message_object_handlers;
 
-// PHP Object Handlers. ////////////////////////////////////////////////////////
+// PHP Object Handlers /////////////////////////////////////////////////////////
 
 /**
  * Message_create()
@@ -77,13 +77,13 @@ static zend_object* Message_create(zend_class_entry *class_type) {
 }
 
 /**
- * message_dtor()
+ * Message_dtor()
  *
  * Object handler to destroy a Message. This releases all resources associated
  * with the message. Note that it is possible to access a destroyed object from
  * PHP in rare cases.
  */
-static void message_dtor(zend_object* obj) {
+static void Message_dtor(zend_object* obj) {
   Message* intern = (Message*)obj;
   ObjCache_Delete(intern->msg);
   zval_dtor(&intern->arena);
@@ -206,7 +206,7 @@ static void Message_write_property(zval *obj, zval *member, zval *val,
  */
 static zval *Message_get_property_ptr_ptr(zval *object, zval *member, int type,
                                           void **cache_slot) {
-  return NULL;
+  return NULL;  // We do not have a properties table.
 }
 
 /**
@@ -216,7 +216,7 @@ static zval *Message_get_property_ptr_ptr(zval *object, zval *member, int type,
  * of our internal properties. We don't support this, so we return NULL.
  */
 static HashTable* Message_get_properties(zval* object TSRMLS_DC) {
-  return NULL;
+  return NULL;  // We don't offer direct references to our properties.
 }
 
 // C Functions from message.h. /////////////////////////////////////////////////
@@ -611,7 +611,7 @@ PHP_METHOD(Message, readWrapperValue) {
 
   f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
 
-  if (!f || !upb_fielddef_iswrapper(f)) {
+  if (!f || !upb_msgdef_iswrapper(upb_fielddef_msgsubdef(f))) {
     zend_throw_exception_ex(NULL, 0, "Message %s has no field %s",
                             upb_msgdef_fullname(intern->desc->msgdef), member);
     return;
@@ -662,7 +662,7 @@ PHP_METHOD(Message, writeWrapperValue) {
 
   f = upb_msgdef_ntof(intern->desc->msgdef, member, size);
 
-  if (!f || !upb_fielddef_iswrapper(f)) {
+  if (!f || !upb_msgdef_iswrapper(upb_fielddef_msgsubdef(f))) {
     zend_throw_exception_ex(NULL, 0, "Message %s has no field %s",
                             upb_msgdef_fullname(intern->desc->msgdef), member);
     return;
@@ -837,7 +837,7 @@ void Message_ModuleInit() {
   message_ce->create_object = Message_create;
 
   memcpy(h, &std_object_handlers, sizeof(zend_object_handlers));
-  h->dtor_obj = message_dtor;
+  h->dtor_obj = Message_dtor;
   h->read_property = Message_read_property;
   h->write_property = Message_write_property;
   h->get_properties = Message_get_properties;

@@ -41,6 +41,7 @@
 #include <google/protobuf/stubs/map_util.h>
 #include <google/protobuf/stubs/stl_util.h>
 
+
 namespace google {
 namespace protobuf {
 
@@ -393,7 +394,8 @@ class EncodedDescriptorDatabase::DescriptorIndex {
   using Value = std::pair<const void*, int>;
   // Helpers to recursively add particular descriptors and all their contents
   // to the index.
-  bool AddFile(const FileDescriptorProto& file, Value value);
+  template <typename FileProto>
+  bool AddFile(const FileProto& file, Value value);
 
   Value FindFile(StringPiece filename);
   Value FindSymbol(StringPiece name);
@@ -406,11 +408,13 @@ class EncodedDescriptorDatabase::DescriptorIndex {
  private:
   friend class EncodedDescriptorDatabase;
 
-  bool AddSymbol(StringPiece name, Value value);
+  bool AddSymbol(StringPiece symbol);
+
+  template <typename DescProto>
   bool AddNestedExtensions(StringPiece filename,
-                           const DescriptorProto& message_type, Value value);
-  bool AddExtension(StringPiece filename,
-                    const FieldDescriptorProto& field, Value value);
+                           const DescProto& message_type);
+  template <typename FieldProto>
+  bool AddExtension(StringPiece filename, const FieldProto& field);
 
   // All the maps below have two representations:
   //  - a std::set<> where we insert initially.
@@ -421,45 +425,129 @@ class EncodedDescriptorDatabase::DescriptorIndex {
 
   void EnsureFlat();
 
-  struct Entry {
-    std::string name;
-    Value data;
+  using String = std::string;
+
+  String EncodeString(StringPiece str) const { return String(str); }
+  StringPiece DecodeString(const String& str, int) const { return str; }
+
+  struct EncodedEntry {
+    // Do not use `Value` here to avoid the padding of that object.
+    const void* data;
+    int size;
+    // Keep the package here instead of each SymbolEntry to save space.
+    String encoded_package;
+
+    Value value() const { return {data, size}; }
   };
-  struct Compare {
-    bool operator()(const Entry& a, const Entry& b) const {
-      return a.name < b.name;
-    }
-    bool operator()(const Entry& a, StringPiece b) const {
-      return a.name < b;
-    }
-    bool operator()(StringPiece a, const Entry& b) const {
-      return a < b.name;
+  std::vector<EncodedEntry> all_values_;
+
+  struct FileEntry {
+    int data_offset;
+    String encoded_name;
+
+    StringPiece name(const DescriptorIndex& index) const {
+      return index.DecodeString(encoded_name, data_offset);
     }
   };
-  std::set<Entry, Compare> by_name_;
-  std::vector<Entry> by_name_flat_;
-  std::set<Entry, Compare> by_symbol_;
-  std::vector<Entry> by_symbol_flat_;
+  struct FileCompare {
+    const DescriptorIndex& index;
+
+    bool operator()(const FileEntry& a, const FileEntry& b) const {
+      return a.name(index) < b.name(index);
+    }
+    bool operator()(const FileEntry& a, StringPiece b) const {
+      return a.name(index) < b;
+    }
+    bool operator()(StringPiece a, const FileEntry& b) const {
+      return a < b.name(index);
+    }
+  };
+  std::set<FileEntry, FileCompare> by_name_{FileCompare{*this}};
+  std::vector<FileEntry> by_name_flat_;
+
+  struct SymbolEntry {
+    int data_offset;
+    String encoded_symbol;
+
+    StringPiece package(const DescriptorIndex& index) const {
+      return index.DecodeString(index.all_values_[data_offset].encoded_package,
+                                data_offset);
+    }
+    StringPiece symbol(const DescriptorIndex& index) const {
+      return index.DecodeString(encoded_symbol, data_offset);
+    }
+
+    std::string AsString(const DescriptorIndex& index) const {
+      auto p = package(index);
+      return StrCat(p, p.empty() ? "" : ".", symbol(index));
+    }
+  };
+
+  struct SymbolCompare {
+    const DescriptorIndex& index;
+
+    std::string AsString(const SymbolEntry& entry) const {
+      return entry.AsString(index);
+    }
+    static StringPiece AsString(StringPiece str) { return str; }
+
+    std::pair<StringPiece, StringPiece> GetParts(
+        const SymbolEntry& entry) const {
+      auto package = entry.package(index);
+      if (package.empty()) return {entry.symbol(index), StringPiece{}};
+      return {package, entry.symbol(index)};
+    }
+    std::pair<StringPiece, StringPiece> GetParts(
+        StringPiece str) const {
+      return {str, {}};
+    }
+
+    template <typename T, typename U>
+    bool operator()(const T& lhs, const U& rhs) const {
+      auto lhs_parts = GetParts(lhs);
+      auto rhs_parts = GetParts(rhs);
+
+      // Fast path to avoid making the whole string for common cases.
+      if (int res =
+              lhs_parts.first.substr(0, rhs_parts.first.size())
+                  .compare(rhs_parts.first.substr(0, lhs_parts.first.size()))) {
+        // If the packages already differ, exit early.
+        return res < 0;
+      } else if (lhs_parts.first.size() == rhs_parts.first.size()) {
+        return lhs_parts.second < rhs_parts.second;
+      }
+      return AsString(lhs) < AsString(rhs);
+    }
+  };
+  std::set<SymbolEntry, SymbolCompare> by_symbol_{SymbolCompare{*this}};
+  std::vector<SymbolEntry> by_symbol_flat_;
+
   struct ExtensionEntry {
-    std::string extendee;
+    int data_offset;
+    String encoded_extendee;
+    StringPiece extendee(const DescriptorIndex& index) const {
+      return index.DecodeString(encoded_extendee, data_offset).substr(1);
+    }
     int extension_number;
-    Value data;
   };
   struct ExtensionCompare {
+    const DescriptorIndex& index;
+
     bool operator()(const ExtensionEntry& a, const ExtensionEntry& b) const {
-      return std::tie(a.extendee, a.extension_number) <
-             std::tie(b.extendee, b.extension_number);
+      return std::make_tuple(a.extendee(index), a.extension_number) <
+             std::make_tuple(b.extendee(index), b.extension_number);
     }
     bool operator()(const ExtensionEntry& a,
                     std::tuple<StringPiece, int> b) const {
-      return std::tie(a.extendee, a.extension_number) < b;
+      return std::make_tuple(a.extendee(index), a.extension_number) < b;
     }
     bool operator()(std::tuple<StringPiece, int> a,
                     const ExtensionEntry& b) const {
-      return a < std::tie(b.extendee, b.extension_number);
+      return a < std::make_tuple(b.extendee(index), b.extension_number);
     }
   };
-  std::set<ExtensionEntry, ExtensionCompare> by_extension_;
+  std::set<ExtensionEntry, ExtensionCompare> by_extension_{
+      ExtensionCompare{*this}};
   std::vector<ExtensionEntry> by_extension_flat_;
 };
 
@@ -535,47 +623,54 @@ bool EncodedDescriptorDatabase::FindAllExtensionNumbers(
   return index_->FindAllExtensionNumbers(extendee_type, output);
 }
 
-bool EncodedDescriptorDatabase::DescriptorIndex::AddFile(
-    const FileDescriptorProto& file, Value value) {
-  if (!InsertIfNotPresent(&by_name_, Entry{file.name(), value}) ||
+template <typename FileProto>
+bool EncodedDescriptorDatabase::DescriptorIndex::AddFile(const FileProto& file,
+                                                         Value value) {
+  // We push `value` into the array first. This is important because the AddXXX
+  // functions below will expect it to be there.
+  all_values_.push_back({value.first, value.second});
+
+  if (!ValidateSymbolName(file.package())) {
+    GOOGLE_LOG(ERROR) << "Invalid package name: " << file.package();
+    return false;
+  }
+  all_values_.back().encoded_package = EncodeString(file.package());
+
+  if (!InsertIfNotPresent(
+          &by_name_, FileEntry{static_cast<int>(all_values_.size() - 1),
+                               EncodeString(file.name())}) ||
       std::binary_search(by_name_flat_.begin(), by_name_flat_.end(),
                          file.name(), by_name_.key_comp())) {
     GOOGLE_LOG(ERROR) << "File already exists in database: " << file.name();
     return false;
   }
 
-  // We must be careful here -- calling file.package() if file.has_package() is
-  // false could access an uninitialized static-storage variable if we are being
-  // run at startup time.
-  std::string path = file.has_package() ? file.package() : std::string();
-  if (!path.empty()) path += '.';
-
   for (const auto& message_type : file.message_type()) {
-    if (!AddSymbol(path + message_type.name(), value)) return false;
-    if (!AddNestedExtensions(file.name(), message_type, value)) return false;
+    if (!AddSymbol(message_type.name())) return false;
+    if (!AddNestedExtensions(file.name(), message_type)) return false;
   }
   for (const auto& enum_type : file.enum_type()) {
-    if (!AddSymbol(path + enum_type.name(), value)) return false;
+    if (!AddSymbol(enum_type.name())) return false;
   }
   for (const auto& extension : file.extension()) {
-    if (!AddSymbol(path + extension.name(), value)) return false;
-    if (!AddExtension(file.name(), extension, value)) return false;
+    if (!AddSymbol(extension.name())) return false;
+    if (!AddExtension(file.name(), extension)) return false;
   }
   for (const auto& service : file.service()) {
-    if (!AddSymbol(path + service.name(), value)) return false;
+    if (!AddSymbol(service.name())) return false;
   }
 
   return true;
 }
 
-template <typename Iter, typename Iter2>
+template <typename Iter, typename Iter2, typename Index>
 static bool CheckForMutualSubsymbols(StringPiece symbol_name, Iter* iter,
-                                     Iter2 end) {
+                                     Iter2 end, const Index& index) {
   if (*iter != end) {
-    if (IsSubSymbol((*iter)->name, symbol_name)) {
+    if (IsSubSymbol((*iter)->AsString(index), symbol_name)) {
       GOOGLE_LOG(ERROR) << "Symbol name \"" << symbol_name
-                 << "\" conflicts with the existing symbol \"" << (*iter)->name
-                 << "\".";
+                 << "\" conflicts with the existing symbol \""
+                 << (*iter)->AsString(index) << "\".";
       return false;
     }
 
@@ -586,10 +681,10 @@ static bool CheckForMutualSubsymbols(StringPiece symbol_name, Iter* iter,
     // to increment it.
     ++*iter;
 
-    if (*iter != end && IsSubSymbol(symbol_name, (*iter)->name)) {
+    if (*iter != end && IsSubSymbol(symbol_name, (*iter)->AsString(index))) {
       GOOGLE_LOG(ERROR) << "Symbol name \"" << symbol_name
-                 << "\" conflicts with the existing symbol \"" << (*iter)->name
-                 << "\".";
+                 << "\" conflicts with the existing symbol \""
+                 << (*iter)->AsString(index) << "\".";
       return false;
     }
   }
@@ -597,28 +692,32 @@ static bool CheckForMutualSubsymbols(StringPiece symbol_name, Iter* iter,
 }
 
 bool EncodedDescriptorDatabase::DescriptorIndex::AddSymbol(
-    StringPiece name, Value value) {
+    StringPiece symbol) {
+  SymbolEntry entry = {static_cast<int>(all_values_.size() - 1),
+                       EncodeString(symbol)};
+  std::string entry_as_string = entry.AsString(*this);
+
   // We need to make sure not to violate our map invariant.
 
   // If the symbol name is invalid it could break our lookup algorithm (which
   // relies on the fact that '.' sorts before all other characters that are
   // valid in symbol names).
-  if (!ValidateSymbolName(name)) {
-    GOOGLE_LOG(ERROR) << "Invalid symbol name: " << name;
+  if (!ValidateSymbolName(symbol)) {
+    GOOGLE_LOG(ERROR) << "Invalid symbol name: " << entry_as_string;
     return false;
   }
 
-  Entry entry = {std::string(name), value};
-
   auto iter = FindLastLessOrEqual(&by_symbol_, entry);
-  if (!CheckForMutualSubsymbols(name, &iter, by_symbol_.end())) {
+  if (!CheckForMutualSubsymbols(entry_as_string, &iter, by_symbol_.end(),
+                                *this)) {
     return false;
   }
 
   // Same, but on by_symbol_flat_
   auto flat_iter =
-      FindLastLessOrEqual(&by_symbol_flat_, name, by_symbol_.key_comp());
-  if (!CheckForMutualSubsymbols(name, &flat_iter, by_symbol_flat_.end())) {
+      FindLastLessOrEqual(&by_symbol_flat_, entry, by_symbol_.key_comp());
+  if (!CheckForMutualSubsymbols(entry_as_string, &flat_iter,
+                                by_symbol_flat_.end(), *this)) {
     return false;
   }
 
@@ -626,32 +725,33 @@ bool EncodedDescriptorDatabase::DescriptorIndex::AddSymbol(
 
   // Insert the new symbol using the iterator as a hint, the new entry will
   // appear immediately before the one the iterator is pointing at.
-  by_symbol_.insert(iter, std::move(entry));
+  by_symbol_.insert(iter, entry);
 
   return true;
 }
 
+template <typename DescProto>
 bool EncodedDescriptorDatabase::DescriptorIndex::AddNestedExtensions(
-    StringPiece filename, const DescriptorProto& message_type,
-    Value value) {
+    StringPiece filename, const DescProto& message_type) {
   for (const auto& nested_type : message_type.nested_type()) {
-    if (!AddNestedExtensions(filename, nested_type, value)) return false;
+    if (!AddNestedExtensions(filename, nested_type)) return false;
   }
   for (const auto& extension : message_type.extension()) {
-    if (!AddExtension(filename, extension, value)) return false;
+    if (!AddExtension(filename, extension)) return false;
   }
   return true;
 }
 
+template <typename FieldProto>
 bool EncodedDescriptorDatabase::DescriptorIndex::AddExtension(
-    StringPiece filename, const FieldDescriptorProto& field,
-    Value value) {
+    StringPiece filename, const FieldProto& field) {
   if (!field.extendee().empty() && field.extendee()[0] == '.') {
     // The extension is fully-qualified.  We can use it as a lookup key in
     // the by_symbol_ table.
-    if (!InsertIfNotPresent(&by_extension_,
-                                 ExtensionEntry{field.extendee().substr(1),
-                                                field.number(), value}) ||
+    if (!InsertIfNotPresent(
+            &by_extension_,
+            ExtensionEntry{static_cast<int>(all_values_.size() - 1),
+                           EncodeString(field.extendee()), field.number()}) ||
         std::binary_search(
             by_extension_flat_.begin(), by_extension_flat_.end(),
             std::make_pair(field.extendee().substr(1), field.number()),
@@ -682,8 +782,9 @@ EncodedDescriptorDatabase::DescriptorIndex::FindSymbolOnlyFlat(
   auto iter =
       FindLastLessOrEqual(&by_symbol_flat_, name, by_symbol_.key_comp());
 
-  return iter != by_symbol_flat_.end() && IsSubSymbol(iter->name, name)
-             ? iter->data
+  return iter != by_symbol_flat_.end() &&
+                 IsSubSymbol(iter->AsString(*this), name)
+             ? all_values_[iter->data_offset].value()
              : Value();
 }
 
@@ -695,10 +796,11 @@ EncodedDescriptorDatabase::DescriptorIndex::FindExtension(
   auto it = std::lower_bound(
       by_extension_flat_.begin(), by_extension_flat_.end(),
       std::make_tuple(containing_type, field_number), by_extension_.key_comp());
-  return it == by_extension_flat_.end() || it->extendee != containing_type ||
+  return it == by_extension_flat_.end() ||
+                 it->extendee(*this) != containing_type ||
                  it->extension_number != field_number
              ? std::make_pair(nullptr, 0)
-             : it->data;
+             : all_values_[it->data_offset].value();
 }
 
 template <typename T, typename Less>
@@ -712,6 +814,7 @@ static void MergeIntoFlat(std::set<T, Less>* s, std::vector<T>* flat) {
 }
 
 void EncodedDescriptorDatabase::DescriptorIndex::EnsureFlat() {
+  all_values_.shrink_to_fit();
   // Merge each of the sets into their flat counterpart.
   MergeIntoFlat(&by_name_, &by_name_flat_);
   MergeIntoFlat(&by_symbol_, &by_symbol_flat_);
@@ -726,7 +829,8 @@ bool EncodedDescriptorDatabase::DescriptorIndex::FindAllExtensionNumbers(
   auto it = std::lower_bound(
       by_extension_flat_.begin(), by_extension_flat_.end(),
       std::make_tuple(containing_type, 0), by_extension_.key_comp());
-  for (; it != by_extension_flat_.end() && it->extendee == containing_type;
+  for (;
+       it != by_extension_flat_.end() && it->extendee(*this) == containing_type;
        ++it) {
     output->push_back(it->extension_number);
     success = true;
@@ -740,11 +844,11 @@ void EncodedDescriptorDatabase::DescriptorIndex::FindAllFileNames(
   output->resize(by_name_.size() + by_name_flat_.size());
   int i = 0;
   for (const auto& entry : by_name_) {
-    (*output)[i] = entry.name;
+    (*output)[i] = std::string(entry.name(*this));
     i++;
   }
   for (const auto& entry : by_name_flat_) {
-    (*output)[i] = entry.name;
+    (*output)[i] = std::string(entry.name(*this));
     i++;
   }
 }
@@ -756,9 +860,9 @@ EncodedDescriptorDatabase::DescriptorIndex::FindFile(
 
   auto it = std::lower_bound(by_name_flat_.begin(), by_name_flat_.end(),
                              filename, by_name_.key_comp());
-  return it == by_name_flat_.end() || it->name != filename
+  return it == by_name_flat_.end() || it->name(*this) != filename
              ? std::make_pair(nullptr, 0)
-             : it->data;
+             : all_values_[it->data_offset].value();
 }
 
 

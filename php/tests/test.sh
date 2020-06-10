@@ -1,42 +1,29 @@
 #!/bin/bash
 
-set -ex
+cd $(dirname $0)
 
-cd `dirname $0`
+./compile_extension.sh
 
-PHP_BASE=$1
-PHP=$PHP_BASE/bin/php
+tests=( array_test.php encode_decode_test.php generated_class_test.php map_field_test.php well_known_test.php descriptors_test.php wrapper_type_setters_test.php)
 
-# Newest version that still supports PHP 7.2
-# But throws lots of deprecation warnings.
-#PHPUNIT=phpunit-8.5.4.phar
+for t in "${tests[@]}"
+do
+  echo "****************************"
+  echo "* $t"
+  echo "****************************"
+  php -dextension=../ext/google/protobuf/modules/protobuf.so `which phpunit` --bootstrap autoload.php $t
+  echo ""
+done
 
-# Oldest major version that supports PHP 7.2
-PHPUNIT=phpunit-6.5.9.phar
-
-if [ -z "$PHP_BASE"] ; then
-  echo "Usage: test.sh <php-base>"
-  exit 1
-fi
-
-if [ ! -x $PHP ]; then
-  echo Could not find executable file: $PHP
-fi
-
-# Download phpunit.
-[ -f $PHPUNIT ] || wget https://phar.phpunit.de/$PHPUNIT
-
-./generate_protos.sh
-
-# Compile c extension
-pushd  ../ext/google/protobuf
-$PHP_BASE/bin/phpize
-./configure --with-php-config=$PHP_BASE/bin/php-config
-make clean && make -j$(nproc)
-popd
-
-$PHP -dextension=../ext/google/protobuf/modules/protobuf.so $PHPUNIT --bootstrap autoload.php .
-$PHP -d protobuf.keep_descriptor_pool_after_request=1 -dextension=../ext/google/protobuf/modules/protobuf.so $PHPUNIT --bootstrap autoload.php .
+for t in "${tests[@]}"
+do
+  echo "****************************"
+  echo "* $t persistent"
+  echo "****************************"
+  php -d protobuf.keep_descriptor_pool_after_request=1 -dextension=../ext/google/protobuf/modules/protobuf.so `which phpunit` --bootstrap autoload.php $t
+  echo ""
+done
+>>>>>>> master
 
 # # Make sure to run the memory test in debug mode.
 # php -dextension=../ext/google/protobuf/modules/protobuf.so memory_leak_test.php

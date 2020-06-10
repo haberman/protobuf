@@ -1,3 +1,58 @@
+Unreleased Changes
+
+  C++:
+  * Removed deprecated unsafe arena string accessors
+  * Enabled heterogeneous lookup for std::string keys in maps.
+  * Removed implicit conversion from StringPiece to std::string
+  * Fix use-after-destroy bug when the Map is allocated in the arena.
+  * Improved the randomness of map ordering
+  * Added stack overflow protection for text format with unknown fields
+  * Use std::hash for proto maps to help with portability.
+  * Added more Windows macros to proto whitelist.
+  * Arena constructors for map entry messages are now marked "explicit"
+    (for regular messages they were already explicit).
+
+  Python:
+  * Reject lowercase t for Timestamp json format. Fixes a conformance test.
+  * Improved the error message when AttributeError is returned from __getattr__
+    in EnumTypeWrapper.
+  * Json format will print full_name directly for extensions.
+
+  Java:
+  * Fixed a bug where setting optional proto3 enums with setFooValue() would
+    not mark the value as present.
+
+  C#:
+  * Dropped support for netstandard1.0 (replaced by support for netstandard1.1).
+    This was required to modernize the parsing stack to use the `Span<byte>`
+    type internally. (#7351)
+  * Add `ParseFrom(ReadOnlySequence<byte>)` method to enable GC friendly
+    parsing with reduced allocations and buffer copies. (#7351)
+  * Add `GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE` define to make
+    generated code compatible with old C# compilers (pre-roslyn compilers
+    from .NET framework and old versions of mono) that do not support
+    ref structs. (#7490)
+
+2020-06-01 version 3.12.3 (C++/Java/Python/PHP/Objective-C/C#/Ruby/JavaScript)
+
+  Objective-C
+  * Tweak the union used for Extensions to support old generated code. #7573
+
+2020-05-26 version 3.12.2 (C++/Java/Python/PHP/Objective-C/C#/Ruby/JavaScript)
+
+  C++
+  * Simplified the template export macros to fix the build for mingw32. (#7539)
+
+  Objective-C
+  * Fix for the :protobuf_objc target in the Bazel BUILD file. (#7538)
+
+2020-05-20 version 3.12.1 (C++/Java/Python/PHP/Objective-C/C#/Ruby/JavaScript)
+
+  Ruby
+  * Re-add binary gems for Ruby 2.3 and 2.4. These are EOL upstream, however
+    many people still use them and dropping support will require more
+    coordination.
+
 2020-05-12 version 3.12.0 (C++/Java/Python/PHP/Objective-C/C#/Ruby/JavaScript)
 
   Protocol Compiler
@@ -44,6 +99,7 @@
   * Mark java enum _VALUE constants as @Deprecated if the enum field is deprecated
   * reduce <clinit> size for enums with allow_alias set to true.
   * Sort map fields alphabetically by the field's key when printing textproto.
+  * Fixed a bug in map sorting that appeared in -rc1 and -rc2 (#7508).
   * TextFormat.merge() handles Any as top level type.
   * Throw a descriptive IllegalArgumentException when calling
     getValueDescriptor() on enum special value UNRECOGNIZED instead of

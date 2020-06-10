@@ -1058,7 +1058,7 @@ PHP_METHOD(Duration, setSeconds);
 PHP_METHOD(Duration, getNanos);
 PHP_METHOD(Duration, setNanos);
 
-PHP_METHOD(Timestamp, __construct);
+static PHP_METHOD(Timestamp, __construct);
 PHP_METHOD(Timestamp, fromDateTime);
 PHP_METHOD(Timestamp, toDateTime);
 PHP_METHOD(Timestamp, getSeconds);

@@ -40,6 +40,17 @@ use Google\Protobuf\GPBEmpty;
 
 class EncodeDecodeTest extends TestBase
 {
+    public function testIssue13()
+    {
+        $m1 = new ListValue();
+        $m1->mergeFromJsonString("[1]");
+
+        $m2 = new ListValue();
+        $m2->mergeFromJsonString("[2]");
+
+        $this->assertFalse($m1 == $m2);
+    }
+
     public function testIssue10()
     {
         $this->assertFalse(new StringValue(['value' => 'a']) == new StringValue(['value' => 'b']));

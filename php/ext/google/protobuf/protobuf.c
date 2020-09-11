@@ -320,6 +320,9 @@ static PHP_MINIT_FUNCTION(protobuf) {
   Def_ModuleInit();
   Map_ModuleInit();
   Message_ModuleInit();
+
+  fprintf(stderr, "\n\n\n\n\nHELLO FROM PROTOBUF!\n\n\n\n\n");
+
   return SUCCESS;
 }
 

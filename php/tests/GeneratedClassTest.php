@@ -1650,6 +1650,12 @@ class GeneratedClassTest extends TestBase
         $m2->getRepeatedMessage()[0]->setA(1234);
         $this->assertTrue($m1 != $m2);
 
+        # SubMessage inside repeated field is checked.
+        $m2 = new TestMessage();
+        $m2->mergeFromString($data);
+        $m2->getRepeatedMessage()[1]->setA(1234);
+        $this->assertFalse($m1 == $m2);
+
         # Map value is checked.
         $m2 = new TestMessage();
         $m2->mergeFromString($data);

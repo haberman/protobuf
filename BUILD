@@ -836,6 +836,16 @@ py_library(
     srcs_version = "PY2AND3",
 )
 
+filegroup(
+    name = "python_test_files__for_upb_only",
+    srcs = glob(
+        [
+            "python/google/protobuf/internal/*_test.py",
+            "python/google/protobuf/internal/test_util.py",
+        ],
+    ),
+)
+
 cc_binary(
     name = "python/google/protobuf/internal/_api_implementation.so",
     srcs = ["python/google/protobuf/internal/api_implementation.cc"],

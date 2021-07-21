@@ -954,7 +954,7 @@ py_proto_library(
     protoc = ":protoc",
     py_libs = [
         ":python_srcs",
-        "@six//:six",
+        #"@six//:six",
     ],
     srcs_version = "PY2AND3",
     visibility = ["//visibility:public"],

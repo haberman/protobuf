@@ -1012,6 +1012,7 @@ py_library(
     ),
     imports = ["python"],
     srcs_version = "PY2AND3",
+    data = glob(["src/google/protobuf/testdata/*"]),
     deps = [
         ":protobuf_python",
         ":python_common_test_protos",

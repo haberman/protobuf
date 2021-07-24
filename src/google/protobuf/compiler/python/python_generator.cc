@@ -299,7 +299,7 @@ bool Generator::Generate(const FileDescriptor* file,
                          GeneratorContext* context, std::string* error) const {
   // -----------------------------------------------------------------
   // parse generator options
-  bool cpp_generated_lib_linked = false;
+  bool cpp_generated_lib_linked = true;
 
   std::vector<std::pair<std::string, std::string> > options;
   ParseGeneratorParameter(parameter, &options);

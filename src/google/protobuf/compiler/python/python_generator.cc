@@ -328,9 +328,9 @@ bool Generator::Generate(const FileDescriptor* file,
   filename += ".py";
 
   pure_python_workable_ = !cpp_generated_lib_linked;
-  if (HasPrefixString(file->name(), "google/protobuf/")) {
-    pure_python_workable_ = true;
-  }
+  //if (HasPrefixString(file->name(), "google/protobuf/")) {
+  //  pure_python_workable_ = true;
+  //}
 
   FileDescriptorProto fdp;
   file_->CopyTo(&fdp);

@@ -430,7 +430,10 @@ void Generator::PrintFileDescriptor() const {
   m["syntax"] = StringifySyntax(file_->syntax());
   m["options"] = OptionsValue(file_->options().SerializeAsString());
   m["serialized_descriptor"] = strings::CHexEscape(file_descriptor_serialized_);
-  printer_->Print(m, "$descriptor_name$ = _descriptor_pool.Default().AddSerializedFile(=b'$serialized_descriptor$')\n");
+  printer_->Print(m,
+                  "$descriptor_name$ = "
+                  "_descriptor_pool.Default().AddSerializedFile(b'$serialized_"
+                  "descriptor$')\n");
   /*
   const char file_descriptor_template[] =
       "$descriptor_name$ = _descriptor_pool.Default().AddSerializedFile(\n"

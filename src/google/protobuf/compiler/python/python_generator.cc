@@ -180,6 +180,7 @@ void PrintTopBoilerplate(io::Printer* printer, const FileDescriptor* file,
   }
   printer->Print(
       "from google.protobuf import descriptor as _descriptor\n"
+      "from google.protobuf import descriptor_pool as _descriptor_pool\n"
       "from google.protobuf import message as _message\n"
       "from google.protobuf import reflection as _reflection\n"
       "from google.protobuf import symbol_database as "
@@ -428,8 +429,11 @@ void Generator::PrintFileDescriptor() const {
   m["package"] = file_->package();
   m["syntax"] = StringifySyntax(file_->syntax());
   m["options"] = OptionsValue(file_->options().SerializeAsString());
+  m["serialized_descriptor"] = strings::CHexEscape(file_descriptor_serialized_);
+  printer_->Print(m, "$descriptor_name$ = _descriptor_pool.Default().AddSerializedFile(=b'$serialized_descriptor$')\n");
+  /*
   const char file_descriptor_template[] =
-      "$descriptor_name$ = _descriptor.FileDescriptor(\n"
+      "$descriptor_name$ = _descriptor_pool.Default().AddSerializedFile(\n"
       "  name='$name$',\n"
       "  package='$package$',\n"
       "  syntax='$syntax$',\n"
@@ -468,6 +472,7 @@ void Generator::PrintFileDescriptor() const {
 
   printer_->Outdent();
   printer_->Print(")\n");
+  */
   printer_->Print("\n");
 }
 
@@ -515,44 +520,11 @@ void Generator::PrintEnum(const EnumDescriptor& enum_descriptor) const {
   std::string module_level_descriptor_name =
       ModuleLevelDescriptorName(enum_descriptor);
   m["descriptor_name"] = module_level_descriptor_name;
-  m["name"] = enum_descriptor.name();
   m["full_name"] = enum_descriptor.full_name();
   m["file"] = kDescriptorKey;
-  const char enum_descriptor_template[] =
-      "$descriptor_name$ = _descriptor.EnumDescriptor(\n"
-      "  name='$name$',\n"
-      "  full_name='$full_name$',\n"
-      "  filename=None,\n"
-      "  file=$file$,\n"
-      "  create_key=_descriptor._internal_create_key,\n"
-      "  values=[\n";
-  std::string options_string;
-  enum_descriptor.options().SerializeToString(&options_string);
-  printer_->Print(m, enum_descriptor_template);
-  printer_->Indent();
-  printer_->Indent();
 
-  if (pure_python_workable_) {
-    for (int i = 0; i < enum_descriptor.value_count(); ++i) {
-      PrintEnumValueDescriptor(*enum_descriptor.value(i));
-      printer_->Print(",\n");
-    }
-  }
-
-  printer_->Outdent();
-  printer_->Print("],\n");
-  printer_->Print("containing_type=None,\n");
-  printer_->Print("serialized_options=$options_value$,\n", "options_value",
-                  OptionsValue(options_string));
-  EnumDescriptorProto edp;
-  PrintSerializedPbInterval(enum_descriptor, edp);
-  printer_->Outdent();
-  printer_->Print(")\n");
-  if (pure_python_workable_) {
-    printer_->Print("_sym_db.RegisterEnumDescriptor($name$)\n", "name",
-                    module_level_descriptor_name);
-  }
-  printer_->Print("\n");
+  printer_->Print(
+      m, "$descriptor_name$ = $file$.enum_types_by_name['$full_name$']\n");
 }
 
 // Recursively prints enums in nested types within descriptor, then

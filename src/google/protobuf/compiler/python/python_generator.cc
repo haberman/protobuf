@@ -760,13 +760,10 @@ void Generator::PrintMessage(const Descriptor& message_descriptor,
   PrintNestedMessages(message_descriptor, qualified_name, to_register);
   std::map<std::string, std::string> m;
   m["descriptor_key"] = kDescriptorKey;
-  if (pure_python_workable_) {
-    m["descriptor_name"] = ModuleLevelDescriptorName(message_descriptor);
-  } else {
-    m["descriptor_name"] = "_descriptor.Descriptor(full_name='" +
-                           message_descriptor.full_name() + "')";
-  }
-  printer_->Print(m, "'$descriptor_key$' : $descriptor_name$,\n");
+  m["full_name"] = message_descriptor.full_name();
+  printer_->Print(m,
+                  "'$descriptor_key$' : "
+                  "$descriptor_key$.message_types_by_name['$full_name$'],\n");
   std::string module_name = ModuleName(file_->name());
   printer_->Print("'__module__' : '$module_name$'\n", "module_name",
                   module_name);

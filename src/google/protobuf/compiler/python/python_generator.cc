@@ -689,96 +689,13 @@ void Generator::PrintServiceStub(const ServiceDescriptor& descriptor) const {
 void Generator::PrintDescriptor(const Descriptor& message_descriptor) const {
   PrintNestedDescriptors(message_descriptor);
 
-  printer_->Print("\n");
-  printer_->Print("$descriptor_name$ = _descriptor.Descriptor(\n",
-                  "descriptor_name",
-                  ModuleLevelDescriptorName(message_descriptor));
-  printer_->Indent();
   std::map<std::string, std::string> m;
   m["name"] = message_descriptor.name();
   m["full_name"] = message_descriptor.full_name();
   m["file"] = kDescriptorKey;
-  const char required_function_arguments[] =
-      "name='$name$',\n"
-      "full_name='$full_name$',\n"
-      "filename=None,\n"
-      "file=$file$,\n"
-      "containing_type=None,\n"
-      "create_key=_descriptor._internal_create_key,\n";
-  printer_->Print(m, required_function_arguments);
-  PrintFieldsInDescriptor(message_descriptor);
-  PrintExtensionsInDescriptor(message_descriptor);
 
-  // Nested types
-  printer_->Print("nested_types=[");
-  for (int i = 0; i < message_descriptor.nested_type_count(); ++i) {
-    const std::string nested_name =
-        ModuleLevelDescriptorName(*message_descriptor.nested_type(i));
-    printer_->Print("$name$, ", "name", nested_name);
-  }
-  printer_->Print("],\n");
-
-  // Enum types
-  printer_->Print("enum_types=[\n");
-  printer_->Indent();
-  for (int i = 0; i < message_descriptor.enum_type_count(); ++i) {
-    const std::string descriptor_name =
-        ModuleLevelDescriptorName(*message_descriptor.enum_type(i));
-    printer_->Print(descriptor_name.c_str());
-    printer_->Print(",\n");
-  }
-  printer_->Outdent();
-  printer_->Print("],\n");
-  std::string options_string;
-  message_descriptor.options().SerializeToString(&options_string);
   printer_->Print(
-      "serialized_options=$options_value$,\n"
-      "is_extendable=$extendable$,\n"
-      "syntax='$syntax$'",
-      "options_value", OptionsValue(options_string), "extendable",
-      message_descriptor.extension_range_count() > 0 ? "True" : "False",
-      "syntax", StringifySyntax(message_descriptor.file()->syntax()));
-  printer_->Print(",\n");
-
-  // Extension ranges
-  printer_->Print("extension_ranges=[");
-  for (int i = 0; i < message_descriptor.extension_range_count(); ++i) {
-    const Descriptor::ExtensionRange* range =
-        message_descriptor.extension_range(i);
-    printer_->Print("($start$, $end$), ", "start", StrCat(range->start),
-                    "end", StrCat(range->end));
-  }
-  printer_->Print("],\n");
-  printer_->Print("oneofs=[\n");
-  printer_->Indent();
-  for (int i = 0; i < message_descriptor.oneof_decl_count(); ++i) {
-    const OneofDescriptor* desc = message_descriptor.oneof_decl(i);
-    std::map<std::string, std::string> m;
-    m["name"] = desc->name();
-    m["full_name"] = desc->full_name();
-    m["index"] = StrCat(desc->index());
-    std::string options_string =
-        OptionsValue(desc->options().SerializeAsString());
-    if (options_string == "None") {
-      m["serialized_options"] = "";
-    } else {
-      m["serialized_options"] = ", serialized_options=" + options_string;
-    }
-    printer_->Print(m,
-                    "_descriptor.OneofDescriptor(\n"
-                    "  name='$name$', full_name='$full_name$',\n"
-                    "  index=$index$, containing_type=None,\n"
-                    "  create_key=_descriptor._internal_create_key,\n"
-                    "fields=[]$serialized_options$),\n");
-  }
-  printer_->Outdent();
-  printer_->Print("],\n");
-  // Serialization of proto
-  DescriptorProto edp;
-  PrintSerializedPbInterval(message_descriptor, edp);
-
-  printer_->Outdent();
-  printer_->Print(")\n");
+      m, "$name$ = $file$.message_types_by_name['$full_name$']\n");
 }
 
 // Prints Python Descriptor objects for all nested types contained in

@@ -344,9 +344,7 @@ bool Generator::Generate(const FileDescriptor* file,
   printer_ = &printer;
 
   PrintTopBoilerplate(printer_, file_, GeneratingDescriptorProto());
-  if (pure_python_workable_) {
-    PrintImports();
-  }
+  PrintImports();
   PrintFileDescriptor();
   PrintTopLevelEnums();
   PrintTopLevelExtensions();

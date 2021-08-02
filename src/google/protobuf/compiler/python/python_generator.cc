@@ -358,17 +358,17 @@ bool Generator::Generate(const FileDescriptor* file,
     // We have to fix up the extensions after the message classes themselves,
     // since they need to call static RegisterExtension() methods on these
     // classes.
-    FixForeignFieldsInExtensions();
+    //FixForeignFieldsInExtensions();
     // Descriptor options may have custom extensions. These custom options
     // can only be successfully parsed after we register corresponding
     // extensions. Therefore we parse all options again here to recognize
     // custom options that may be unknown when we define the descriptors.
     // This does not apply to services because they are not used by extensions.
-    FixAllDescriptorOptions();
-    PrintServiceDescriptors();
+    //FixAllDescriptorOptions();
+    //PrintServiceDescriptors();
   }
   if (HasGenericServices(file)) {
-    PrintServices();
+    //PrintServices();
   }
 
   printer.Print("# @@protoc_insertion_point(module_scope)\n");

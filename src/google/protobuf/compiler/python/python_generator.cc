@@ -541,7 +541,7 @@ void Generator::PrintNestedEnums(const Descriptor& descriptor) const {
 }
 
 void Generator::PrintTopLevelExtensions() const {
-  const bool is_extension = true;
+  //const bool is_extension = true;
   for (int i = 0; i < file_->extension_count(); ++i) {
     const FieldDescriptor& extension_field = *file_->extension(i);
     std::string constant_name = extension_field.name() + "_FIELD_NUMBER";
@@ -549,10 +549,10 @@ void Generator::PrintTopLevelExtensions() const {
     printer_->Print("$constant_name$ = $number$\n", "constant_name",
                     constant_name, "number",
                     StrCat(extension_field.number()));
-    printer_->Print("$name$ = ", "name",
-                    ResolveKeyword(extension_field.name()));
-    PrintFieldDescriptor(extension_field, is_extension);
-    printer_->Print("\n");
+    printer_->Print("$name$ = _descriptor_pool.Default().FindExtensionByName(\"$full_name$\")\n", "name",
+                    ResolveKeyword(extension_field.name()), "full_name", extension_field.full_name());
+    //PrintFieldDescriptor(extension_field, is_extension);
+    //printer_->Print("\n");
   }
   printer_->Print("\n");
 }

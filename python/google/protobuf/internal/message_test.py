@@ -93,6 +93,12 @@ if six.PY3:
   long = int
 
 
+def IsUpb():
+  if api_implementation.Type() != 'cpp':
+    return False
+  from google.protobuf.pyext import _message
+  return _message._IS_UPB
+
 # Python pre-2.6 does not have isinf() or isnan() functions, so we have
 # to provide our own.
 def isnan(val):
@@ -1079,6 +1085,7 @@ class MessageTest(unittest.TestCase):
 
   FALSY_VALUES = [None, False, 0, 0.0, b'', u'', bytearray(), [], {}, set()]
 
+  @unittest.skipIf(IsUpb())
   def testExtendInt32WithNothing(self, message_module):
     """Test no-ops extending repeated int32 fields."""
     m = message_module.TestAllTypes()
@@ -1092,6 +1099,7 @@ class MessageTest(unittest.TestCase):
     m.repeated_int32.extend([])
     self.assertSequenceEqual([], m.repeated_int32)
 
+  @unittest.skipIf(IsUpb())
   def testExtendFloatWithNothing(self, message_module):
     """Test no-ops extending repeated float fields."""
     m = message_module.TestAllTypes()
@@ -1105,6 +1113,7 @@ class MessageTest(unittest.TestCase):
     m.repeated_float.extend([])
     self.assertSequenceEqual([], m.repeated_float)
 
+  @unittest.skipIf(IsUpb())
   def testExtendStringWithNothing(self, message_module):
     """Test no-ops extending repeated string fields."""
     m = message_module.TestAllTypes()

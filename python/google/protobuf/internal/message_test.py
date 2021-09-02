@@ -1085,7 +1085,7 @@ class MessageTest(unittest.TestCase):
 
   FALSY_VALUES = [None, False, 0, 0.0, b'', u'', bytearray(), [], {}, set()]
 
-  @unittest.skipIf(IsUpb())
+  @unittest.skipIf(IsUpb(), 'skip deprecated API for upb')
   def testExtendInt32WithNothing(self, message_module):
     """Test no-ops extending repeated int32 fields."""
     m = message_module.TestAllTypes()
@@ -1099,7 +1099,7 @@ class MessageTest(unittest.TestCase):
     m.repeated_int32.extend([])
     self.assertSequenceEqual([], m.repeated_int32)
 
-  @unittest.skipIf(IsUpb())
+  @unittest.skipIf(IsUpb(), 'skip deprecated API for upb')
   def testExtendFloatWithNothing(self, message_module):
     """Test no-ops extending repeated float fields."""
     m = message_module.TestAllTypes()
@@ -1113,7 +1113,7 @@ class MessageTest(unittest.TestCase):
     m.repeated_float.extend([])
     self.assertSequenceEqual([], m.repeated_float)
 
-  @unittest.skipIf(IsUpb())
+  @unittest.skipIf(IsUpb(), 'skip deprecated API for upb')
   def testExtendStringWithNothing(self, message_module):
     """Test no-ops extending repeated string fields."""
     m = message_module.TestAllTypes()

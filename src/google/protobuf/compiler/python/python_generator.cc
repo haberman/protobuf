@@ -354,6 +354,7 @@ bool Generator::Generate(const FileDescriptor* file,
     FixForeignFieldsInDescriptors();
   }
   PrintMessages();
+  PrintServiceDescriptors();
   if (pure_python_workable_) {
     // We have to fix up the extensions after the message classes themselves,
     // since they need to call static RegisterExtension() methods on these
@@ -365,7 +366,6 @@ bool Generator::Generate(const FileDescriptor* file,
     // custom options that may be unknown when we define the descriptors.
     // This does not apply to services because they are not used by extensions.
     //FixAllDescriptorOptions();
-    PrintServiceDescriptors();
   }
   if (HasGenericServices(file)) {
     //PrintServices();
@@ -568,7 +568,7 @@ void Generator::PrintMessageDescriptors() const {
 void Generator::PrintServiceDescriptors() const {
   for (int i = 0; i < file_->service_count(); ++i) {
     PrintServiceDescriptor(*file_->service(i));
-    AddServiceToFileDescriptor(*file_->service(i));
+    //AddServiceToFileDescriptor(*file_->service(i));
     printer_->Print("\n");
   }
 }
@@ -588,8 +588,10 @@ void Generator::PrintServiceDescriptor(
   std::string options_string;
   descriptor.options().SerializeToString(&options_string);
 
-  printer_->Print("$service_name$ = _descriptor.ServiceDescriptor(\n",
-                  "service_name", service_name);
+  printer_->Print("$service_name$ = DESCRIPTOR.services_by_name[\"$full_name$\"]\n",
+                  "service_name", service_name,
+                  "full_name", descriptor.full_name());
+  return;
   printer_->Indent();
   std::map<std::string, std::string> m;
   m["name"] = descriptor.name();

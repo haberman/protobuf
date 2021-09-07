@@ -365,7 +365,7 @@ bool Generator::Generate(const FileDescriptor* file,
     // custom options that may be unknown when we define the descriptors.
     // This does not apply to services because they are not used by extensions.
     //FixAllDescriptorOptions();
-    //PrintServiceDescriptors();
+    PrintServiceDescriptors();
   }
   if (HasGenericServices(file)) {
     //PrintServices();

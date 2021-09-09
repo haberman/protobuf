@@ -895,6 +895,7 @@ cc_binary(
         "//conditions:default": [],
         ":use_fast_cpp_protos": ["//external:python_headers"],
     }),
+    visibility = ["//visibility:public"],
 )
 
 config_setting(

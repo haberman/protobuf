@@ -86,8 +86,9 @@ class DescriptorTest(unittest.TestCase):
     # works if the input is canonical; in particular, all type names must be
     # fully qualified.
     self.pool = self.GetDescriptorPool()
-    self.my_file = self.pool.FindFileByName(file_proto.name)
-    if not self.my_file:
+    try:
+      self.my_file = self.pool.FindFileByName(file_proto.name)
+    except KeyError:
       self.my_file = self.pool.Add(file_proto)
     self.my_message = self.my_file.message_types_by_name[message_proto.name]
     self.my_enum = self.my_message.enum_types_by_name[enum_proto.name]

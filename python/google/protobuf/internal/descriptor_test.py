@@ -82,9 +82,13 @@ class DescriptorTest(unittest.TestCase):
         input_type='.protobuf_unittest.NestedMessage',
         output_type='.protobuf_unittest.ResponseMessage')
 
+    # Note: Calling DescriptorPool.Add() multiple times with the same file only
+    # works if the input is canonical; in particular, all type names must be
+    # fully qualified.
+    self.pool = self.GetDescriptorPool()
     self.my_file = self.pool.FindFileByName(file_proto.name)
     if not self.my_file:
-      self.pool.Add(file_proto)
+      self.my_file = self.pool.Add(file_proto)
     self.my_message = self.my_file.message_types_by_name[message_proto.name]
     self.my_enum = self.my_message.enum_types_by_name[enum_proto.name]
     self.my_service = self.my_file.services_by_name[service_proto.name]

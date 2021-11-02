@@ -1085,9 +1085,9 @@ static VALUE EnumDescriptor_name(VALUE _self) {
 static VALUE EnumDescriptor_lookup_name(VALUE _self, VALUE name) {
   EnumDescriptor* self = ruby_to_EnumDescriptor(_self);
   const char* name_str= rb_id2name(SYM2ID(name));
-  int32_t val = 0;
-  if (upb_enumdef_ntoiz(self->enumdef, name_str, &val)) {
-    return INT2NUM(val);
+  const upb_enumvaldef *ev = upb_enumdef_lookupnamez(self->enumdef, name_str);
+  if (ev) {
+    return INT2NUM(upb_enumvaldef_number(ev));
   } else {
     return Qnil;
   }
@@ -1103,9 +1103,9 @@ static VALUE EnumDescriptor_lookup_name(VALUE _self, VALUE name) {
 static VALUE EnumDescriptor_lookup_value(VALUE _self, VALUE number) {
   EnumDescriptor* self = ruby_to_EnumDescriptor(_self);
   int32_t val = NUM2INT(number);
-  const char* name = upb_enumdef_iton(self->enumdef, val);
-  if (name != NULL) {
-    return ID2SYM(rb_intern(name));
+  const upb_enumvaldef *ev = upb_enumdef_lookupnum(self->enumdef, val);
+  if (ev) {
+    return ID2SYM(rb_intern(upb_enumvaldef_name(ev)));
   } else {
     return Qnil;
   }
@@ -1121,12 +1121,10 @@ static VALUE EnumDescriptor_lookup_value(VALUE _self, VALUE number) {
 static VALUE EnumDescriptor_each(VALUE _self) {
   EnumDescriptor* self = ruby_to_EnumDescriptor(_self);
 
-  upb_enum_iter it;
-  for (upb_enum_begin(&it, self->enumdef);
-       !upb_enum_done(&it);
-       upb_enum_next(&it)) {
-    VALUE key = ID2SYM(rb_intern(upb_enum_iter_name(&it)));
-    VALUE number = INT2NUM(upb_enum_iter_number(&it));
+  for (int i = 0, n = upb_enumdef_valuecount(self->enumdef); i < n; i++) {
+    const upb_enumvaldef *ev = upb_enumdef_value(self->enumdef, i);
+    VALUE key = ID2SYM(rb_intern(upb_enumvaldef_name(ev)));
+    VALUE number = INT2NUM(upb_enumvaldef_number(ev));
     rb_yield_values(2, key, number);
   }
 

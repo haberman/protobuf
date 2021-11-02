@@ -42,6 +42,141 @@
 #include "message.h"
 #include "protobuf.h"
 
+/* Adapted from ABSL's wyhash. */
+
+static uint64_t UnalignedLoad64(const void *p) {
+  uint64_t val;
+  memcpy(&val, p, 8);
+  return val;
+}
+
+static uint32_t UnalignedLoad32(const void *p) {
+  uint32_t val;
+  memcpy(&val, p, 4);
+  return val;
+}
+
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#endif
+
+/* Computes a * b, returning the low 64 bits of the result and storing the high
+ * 64 bits in |*high|. */
+static uint64_t upb_umul128(uint64_t v0, uint64_t v1, uint64_t* out_high) {
+#ifdef __SIZEOF_INT128__
+  __uint128_t p = v0;
+  p *= v1;
+  *out_high = (uint64_t)(p >> 64);
+  return (uint64_t)p;
+#elif defined(_MSC_VER) && defined(_M_X64)
+  return _umul128(v0, v1, out_high);
+#else
+  uint64_t a32 = v0 >> 32;
+  uint64_t a00 = v0 & 0xffffffff;
+  uint64_t b32 = v1 >> 32;
+  uint64_t b00 = v1 & 0xffffffff;
+  uint64_t high = a32 * b32;
+  uint64_t low = a00 * b00;
+  uint64_t mid1 = a32 * b00;
+  uint64_t mid2 = a00 * b32;
+  low += (mid1 << 32) + (mid2 << 32);
+  // Omit carry bit, for mixing we do not care about exact numerical precision.
+  high += (mid1 >> 32) + (mid2 >> 32);
+  *out_high = high;
+  return low;
+#endif
+}
+
+static uint64_t WyhashMix(uint64_t v0, uint64_t v1) {
+  uint64_t high;
+  uint64_t low = upb_umul128(v0, v1, &high);
+  return low ^ high;
+}
+
+uint64_t RubyWyhash(const void *data, size_t len, uint64_t seed,
+                const uint64_t salt[]) {
+  const uint8_t* ptr = (const uint8_t*)data;
+  uint64_t starting_length = (uint64_t)len;
+  uint64_t current_state = seed ^ salt[0];
+
+  if (len > 64) {
+    // If we have more than 64 bytes, we're going to handle chunks of 64
+    // bytes at a time. We're going to build up two separate hash states
+    // which we will then hash together.
+    uint64_t duplicated_state = current_state;
+
+    do {
+      uint64_t a = UnalignedLoad64(ptr);
+      uint64_t b = UnalignedLoad64(ptr + 8);
+      uint64_t c = UnalignedLoad64(ptr + 16);
+      uint64_t d = UnalignedLoad64(ptr + 24);
+      uint64_t e = UnalignedLoad64(ptr + 32);
+      uint64_t f = UnalignedLoad64(ptr + 40);
+      uint64_t g = UnalignedLoad64(ptr + 48);
+      uint64_t h = UnalignedLoad64(ptr + 56);
+
+      uint64_t cs0 = WyhashMix(a ^ salt[1], b ^ current_state);
+      uint64_t cs1 = WyhashMix(c ^ salt[2], d ^ current_state);
+      current_state = (cs0 ^ cs1);
+
+      uint64_t ds0 = WyhashMix(e ^ salt[3], f ^ duplicated_state);
+      uint64_t ds1 = WyhashMix(g ^ salt[4], h ^ duplicated_state);
+      duplicated_state = (ds0 ^ ds1);
+
+      ptr += 64;
+      len -= 64;
+    } while (len > 64);
+
+    current_state = current_state ^ duplicated_state;
+  }
+
+  // We now have a data `ptr` with at most 64 bytes and the current state
+  // of the hashing state machine stored in current_state.
+  while (len > 16) {
+    uint64_t a = UnalignedLoad64(ptr);
+    uint64_t b = UnalignedLoad64(ptr + 8);
+
+    current_state = WyhashMix(a ^ salt[1], b ^ current_state);
+
+    ptr += 16;
+    len -= 16;
+  }
+
+  // We now have a data `ptr` with at most 16 bytes.
+  uint64_t a = 0;
+  uint64_t b = 0;
+  if (len > 8) {
+    // When we have at least 9 and at most 16 bytes, set A to the first 64
+    // bits of the input and B to the last 64 bits of the input. Yes, they will
+    // overlap in the middle if we are working with less than the full 16
+    // bytes.
+    a = UnalignedLoad64(ptr);
+    b = UnalignedLoad64(ptr + len - 8);
+  } else if (len > 3) {
+    // If we have at least 4 and at most 8 bytes, set A to the first 32
+    // bits and B to the last 32 bits.
+    a = UnalignedLoad32(ptr);
+    b = UnalignedLoad32(ptr + len - 4);
+  } else if (len > 0) {
+    // If we have at least 1 and at most 3 bytes, read all of the provided
+    // bits into A, with some adjustments.
+    a = ((ptr[0] << 16) | (ptr[len >> 1] << 8) | ptr[len - 1]);
+    b = 0;
+  } else {
+    a = 0;
+    b = 0;
+  }
+
+  uint64_t w = WyhashMix(a ^ salt[1], b ^ current_state);
+  uint64_t z = salt[1] ^ starting_length;
+  return WyhashMix(w, z);
+}
+
+const uint64_t kRubyWyhashSalt[5] = {
+    0x243F6A8885A308D3ULL, 0x13198A2E03707344ULL, 0xA4093822299F31D0ULL,
+    0x082EFA98EC4E6C89ULL, 0x452821E638D01377ULL,
+};
+
 static upb_strview Convert_StringData(VALUE str, upb_arena *arena) {
   upb_strview ret;
   if (arena) {
@@ -103,16 +238,20 @@ static int32_t Convert_ToEnum(VALUE value, const char* name,
       Convert_CheckInt(name, UPB_TYPE_INT32, value);
       val = NUM2INT(value);
       break;
-    case T_STRING:
-      if (!upb_enumdef_ntoi(e, RSTRING_PTR(value), RSTRING_LEN(value), &val)) {
-        goto unknownval;
-      }
+    case T_STRING: {
+      const upb_enumvaldef *ev =
+          upb_enumdef_lookupname(e, RSTRING_PTR(value), RSTRING_LEN(value));
+      if (!ev) goto unknownval;
+      val = upb_enumvaldef_number(ev);
       break;
-    case T_SYMBOL:
-      if (!upb_enumdef_ntoiz(e, rb_id2name(SYM2ID(value)), &val)) {
-        goto unknownval;
-      }
+    }
+    case T_SYMBOL: {
+      const upb_enumvaldef *ev =
+          upb_enumdef_lookupnamez(e, rb_id2name(SYM2ID(value)));
+      if (!ev) goto unknownval;
+      val = upb_enumvaldef_number(ev);
       break;
+    }
     default:
       rb_raise(cTypeError,
                "Expected number or symbol type for enum field '%s'.", name);
@@ -244,10 +383,10 @@ VALUE Convert_UpbToRuby(upb_msgval upb_val, TypeInfo type_info, VALUE arena) {
     case UPB_TYPE_UINT64:
       return ULL2NUM(upb_val.int64_val);
     case UPB_TYPE_ENUM: {
-      const char* name =
-          upb_enumdef_iton(type_info.def.enumdef, upb_val.int32_val);
-      if (name) {
-        return ID2SYM(rb_intern(name));
+      const upb_enumvaldef* ev =
+          upb_enumdef_lookupnum(type_info.def.enumdef, upb_val.int32_val);
+      if (ev) {
+        return ID2SYM(rb_intern(upb_enumvaldef_name(ev)));
       } else {
         return INT2NUM(upb_val.int32_val);
       }
@@ -327,19 +466,20 @@ bool Msgval_IsEqual(upb_msgval val1, upb_msgval val2, TypeInfo type_info) {
 uint64_t Msgval_GetHash(upb_msgval val, TypeInfo type_info, uint64_t seed) {
   switch (type_info.type) {
     case UPB_TYPE_BOOL:
-      return Wyhash(&val, 1, seed, kWyhashSalt);
+      return RubyWyhash(&val, 1, seed, kRubyWyhashSalt);
     case UPB_TYPE_FLOAT:
     case UPB_TYPE_INT32:
     case UPB_TYPE_UINT32:
     case UPB_TYPE_ENUM:
-      return Wyhash(&val, 4, seed, kWyhashSalt);
+      return RubyWyhash(&val, 4, seed, kRubyWyhashSalt);
     case UPB_TYPE_DOUBLE:
     case UPB_TYPE_INT64:
     case UPB_TYPE_UINT64:
-      return Wyhash(&val, 8, seed, kWyhashSalt);
+      return RubyWyhash(&val, 8, seed, kRubyWyhashSalt);
     case UPB_TYPE_STRING:
     case UPB_TYPE_BYTES:
-      return Wyhash(val.str_val.data, val.str_val.size, seed, kWyhashSalt);
+      return RubyWyhash(val.str_val.data, val.str_val.size, seed,
+                        kRubyWyhashSalt);
     case UPB_TYPE_MESSAGE:
       return Message_Hash(val.msg_val, type_info.def.msgdef, seed);
     default:

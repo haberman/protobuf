@@ -716,7 +716,7 @@ uint64_t Message_Hash(const upb_msg* msg, const upb_msgdef* m, uint64_t seed) {
                        &size);
 
   if (data) {
-    uint64_t ret = Wyhash(data, size, seed, kWyhashSalt);
+    uint64_t ret = RubyWyhash(data, size, seed, kRubyWyhashSalt);
     upb_arena_free(arena);
     return ret;
   } else {
@@ -931,10 +931,11 @@ static VALUE Message_decode(VALUE klass, VALUE data) {
 
   VALUE msg_rb = initialize_rb_class_with_no_args(klass);
   Message* msg = ruby_to_Message(msg_rb);
+  upb_DecodeStatus status =
+      upb_decode(RSTRING_PTR(data), RSTRING_LEN(data), (upb_msg *)msg->msg,
+                 upb_msgdef_layout(msg->msgdef), Arena_get(msg->arena));
 
-  if (!upb_decode(RSTRING_PTR(data), RSTRING_LEN(data), (upb_msg*)msg->msg,
-                 upb_msgdef_layout(msg->msgdef),
-                 Arena_get(msg->arena))) {
+  if (status != kUpb_DecodeStatus_Ok) {
     rb_raise(cParseError, "Error occurred during parsing");
   }
 
@@ -1169,12 +1170,11 @@ static VALUE enum_lookup(VALUE self, VALUE number) {
   int32_t num = NUM2INT(number);
   VALUE desc = rb_ivar_get(self, descriptor_instancevar_interned);
   const upb_enumdef *e = EnumDescriptor_GetEnumDef(desc);
-
-  const char* name = upb_enumdef_iton(e, num);
-  if (name == NULL) {
-    return Qnil;
+  const upb_enumvaldef *ev = upb_enumdef_lookupnum(e, num);
+  if (ev) {
+    return ID2SYM(rb_intern(upb_enumvaldef_name(ev)));
   } else {
-    return ID2SYM(rb_intern(name));
+    return Qnil;
   }
 }
 
@@ -1189,13 +1189,11 @@ static VALUE enum_resolve(VALUE self, VALUE sym) {
   const char* name = rb_id2name(SYM2ID(sym));
   VALUE desc = rb_ivar_get(self, descriptor_instancevar_interned);
   const upb_enumdef *e = EnumDescriptor_GetEnumDef(desc);
-
-  int32_t num = 0;
-  bool found = upb_enumdef_ntoiz(e, name, &num);
-  if (!found) {
-    return Qnil;
+  const upb_enumvaldef *ev = upb_enumdef_lookupnamez(e, name);
+  if (ev) {
+    return INT2NUM(upb_enumvaldef_number(ev));
   } else {
-    return INT2NUM(num);
+    return Qnil;
   }
 }
 
@@ -1214,12 +1212,10 @@ VALUE build_module_from_enumdesc(VALUE _enumdesc) {
   const upb_enumdef *e = EnumDescriptor_GetEnumDef(_enumdesc);
   VALUE mod = rb_define_module_id(rb_intern(upb_enumdef_fullname(e)));
 
-  upb_enum_iter it;
-  for (upb_enum_begin(&it, e);
-       !upb_enum_done(&it);
-       upb_enum_next(&it)) {
-    const char* name = upb_enum_iter_name(&it);
-    int32_t value = upb_enum_iter_number(&it);
+  for (int i = 0, n = upb_enumdef_valuecount(e); i < n; i++) {
+    const upb_enumvaldef *ev = upb_enumdef_value(e, i);
+    const char* name = upb_enumvaldef_name(ev);
+    int32_t value = upb_enumvaldef_number(ev);
     if (name[0] < 'A' || name[0] > 'Z') {
       rb_warn("Enum value '%s' does not start with an uppercase letter "
               "as is required for Ruby constants.",
@@ -1247,7 +1243,8 @@ upb_msg* Message_deep_copy(const upb_msg* msg, const upb_msgdef* m,
   char* data = upb_encode_ex(msg, layout, 0, tmp_arena, &size);
   upb_msg* new_msg = upb_msg_new(m, arena);
 
-  if (!data || !upb_decode(data, size, new_msg, layout, arena)) {
+  if (!data ||
+      upb_decode(data, size, new_msg, layout, arena) != kUpb_DecodeStatus_Ok) {
     upb_arena_free(tmp_arena);
     rb_raise(cParseError, "Error occurred copying proto");
   }

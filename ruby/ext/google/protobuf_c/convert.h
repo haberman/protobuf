@@ -69,4 +69,8 @@ bool Msgval_IsEqual(upb_msgval val1, upb_msgval val2, TypeInfo type_info);
 // Returns a hash value for the given upb_msgval.
 uint64_t Msgval_GetHash(upb_msgval val, TypeInfo type_info, uint64_t seed);
 
+extern const uint64_t kRubyWyhashSalt[5];
+uint64_t RubyWyhash(const void *data, size_t len, uint64_t seed,
+                    const uint64_t salt[]);
+
 #endif  // RUBY_PROTOBUF_CONVERT_H_

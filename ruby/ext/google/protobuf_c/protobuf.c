@@ -112,9 +112,9 @@ VALUE StringBuilder_ToRubyString(StringBuilder* b) {
 
 static void StringBuilder_PrintEnum(StringBuilder* b, int32_t val,
                                     const upb_enumdef* e) {
-  const char *name = upb_enumdef_iton(e, val);
-  if (name) {
-    StringBuilder_Printf(b, ":%s", name);
+  const upb_enumvaldef *ev = upb_enumdef_lookupnum(e, val);
+  if (ev) {
+    StringBuilder_Printf(b, ":%s", upb_enumvaldef_name(ev));
   } else {
     StringBuilder_Printf(b, "%" PRId32, val);
   }

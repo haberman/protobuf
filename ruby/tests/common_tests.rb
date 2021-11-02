@@ -816,7 +816,7 @@ module CommonTests
                                       :optional_enum => :B,
                                       :repeated_string => ["a", "b", "c"],
                                       :repeated_int32 => [42, 43, 44],
-                                      :repeated_enum => [:A, :B, :C, 100],
+                                      :repeated_enum => [:A, :B, :C],
                                       :repeated_msg => [proto_module::TestMessage2.new(:foo => 1),
                                                         proto_module::TestMessage2.new(:foo => 2)])
     data = proto_module::TestMessage.encode m
@@ -1071,7 +1071,7 @@ module CommonTests
     optional_enum.subtype.each do |k, v|
       # set with integer, check resolution to symbolic name
       optional_enum.set(m, v)
-      assert optional_enum.get(m) == k
+      assert_equal k, optional_enum.get(m), "v=#{v}, m=#{m}"
     end
   end
 

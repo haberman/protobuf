@@ -157,6 +157,8 @@ def _impl(ctx):
       ],
   )
 
+  supports_pic = feature(name = "supports_pic", enabled = True)
+
   return cc_common.create_cc_toolchain_config_info(
       abi_libc_version = ctx.attr.abi_version,
       abi_version = ctx.attr.abi_version,
@@ -169,7 +171,7 @@ def _impl(ctx):
           "/usr/local/include",
           "/usr/local/lib/clang",
       ],
-      features = [linker_flags, compiler_flags, sysroot_flags],
+      features = [linker_flags, compiler_flags, sysroot_flags, supports_pic],
       host_system_name = "local",
       target_cpu = ctx.attr.target_cpu,
       target_libc = ctx.attr.target_cpu,

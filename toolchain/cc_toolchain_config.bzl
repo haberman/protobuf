@@ -157,7 +157,11 @@ def _impl(ctx):
       ],
   )
 
-  supports_pic = feature(name = "supports_pic", enabled = True)
+  features = [linker_flags, compiler_flags, sysroot_flags]
+
+  if "mingw" not in ctx.attr.target_full_name:
+      supports_pic = feature(name = "supports_pic", enabled = True)
+      features.append(supports_pic)
 
   return cc_common.create_cc_toolchain_config_info(
       abi_libc_version = ctx.attr.abi_version,
@@ -171,7 +175,7 @@ def _impl(ctx):
           "/usr/local/include",
           "/usr/local/lib/clang",
       ],
-      features = [linker_flags, compiler_flags, sysroot_flags, supports_pic],
+      features = features,
       host_system_name = "local",
       target_cpu = ctx.attr.target_cpu,
       target_libc = ctx.attr.target_cpu,

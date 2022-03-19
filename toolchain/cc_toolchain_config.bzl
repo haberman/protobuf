@@ -159,9 +159,18 @@ def _impl(ctx):
 
   features = [linker_flags, compiler_flags, sysroot_flags]
 
-  if "mingw" not in ctx.attr.target_full_name:
-      supports_pic = feature(name = "supports_pic", enabled = True)
-      features.append(supports_pic)
+  if "mingw" in ctx.attr.target_full_name:
+      features.append(
+          feature(
+              name = "targets_windows",
+              enabled = True,
+              #implies = ["copy_dynamic_libraries_to_binary"],
+          )
+      )
+  else:
+      features.append(
+          feature(name = "supports_pic", enabled = True)
+      )
 
   return cc_common.create_cc_toolchain_config_info(
       abi_libc_version = ctx.attr.abi_version,
